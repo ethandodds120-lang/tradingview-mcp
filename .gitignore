@@ -5,3 +5,16 @@ temp_*
 *.log
 discovery-log.json
 rules.json
+__pycache__/
+*.pyc
+paper_runs/
+.env
+.env/
+*.env
+
+.env*
+NQ_5min.csv
+SOL_*.csv
+node_modules/
+__pycache__/
+paper_runs/

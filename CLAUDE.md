@@ -127,3 +127,82 @@ Claude Code ←→ MCP Server (stdio) ←→ CDP (localhost:9222) ←→ Trading
 ```
 
 Pine graphics path: `study._graphics._primitivesCollection.dwglines.get('lines').get(false)._primitivesDataById`
+
+---
+
+# quantlab — Strategy Research Harness
+
+A separate concern from the MCP tools above: a backtest engine plus a validation
+gauntlet, living in `quantlab/`. `run.py` is the gauntlet CLI, `paper.py` the
+forward-test CLI. The MCP layer is one of its bar sources (`--tv-symbol`), nothing
+more — orders never go out through TradingView.
+
+## The two families
+
+Strategies are split by **what kind of claim they make**. This is encoded, not
+just documented: `Strategy.family` is validated at construction and a strategy
+cannot reach the registry without declaring one.
+
+**PREDICTIVE** — a chart pattern or market structure tells you what price does
+next. A liquidity sweep implies a reversal; a fair value gap implies a
+retracement. The claim is about a *specific setup* and rests on a story about
+intent. Discretionary logic made mechanical.
+→ `tjr`, `fvg` (in `quantlab/strategies/predictive/`)
+
+**SYSTEMATIC** — no view on any individual setup. Harvests a statistical property
+measured across the whole dataset: return autocorrelation, volatility clustering,
+drift. No narrative about why price *should* move; the claim is about an average.
+→ `tsmom`, `ma_cross`, `donchian`, `trend_filter`, `rsi_meanrev`
+   (in `quantlab/strategies/systematic/`)
+
+**BENCHMARK** — neither. What both families have to beat.
+→ `buy_hold`, `random_entry` (in `quantlab/strategies/benchmarks.py`)
+
+**Both families predict.** Do not describe systematic strategies as "not
+predicting" — a momentum rule claims next period's return is related to the last
+one, which is a prediction and a falsifiable one. The difference is what the claim
+rests on: a pattern implying intent, versus a statistical property persisting.
+
+## Metadata
+
+Every `Strategy` carries `family`, `thesis`, `evidence`, `source`.
+
+`evidence` is one of `published` | `folklore` | `untested`, and it describes what
+is known about the *effect*, not how well the strategy backtests. Do not inflate
+it. `folklore` is not an insult — it means untested here, which is the entire
+reason the harness exists. `tjr` and `fvg` are `folklore` and should stay that way
+unless someone produces a citation.
+
+## Commands
+
+```bash
+python run.py --strategy tjr --synthetic --quick   # one strategy, full gauntlet
+python run.py --compare --synthetic                # all, grouped by family
+python run.py --family predictive --csv NQ_5min.csv
+python run.py --head-to-head --csv NQ_5min.csv     # families against each other
+```
+
+`--head-to-head` surfaces **cost drag** as the interesting column: predictive
+strategies trade setups rather than averages, so they trade far more often and
+need a proportionally larger gross edge to finish level.
+
+## Rules when working in quantlab/
+
+1. **Never introduce lookahead.** `strategies/predictive/primitives.py:confirmed_swings`
+   carries the guard: a pivot at bar `p` is only admissible at `p + swing_right`,
+   which is what its `confirmed_at` tag records. Gate on `confirmed_at`, never on
+   `index`. No `.shift(-n)`, no `rolling(center=True)`, no `argrelextrema`.
+2. **Do not tune parameters or grids while refactoring.** Different numbers after a
+   restructuring means a bug, not an improvement. Capture before/after and diff.
+3. **Build predictive strategies from the primitives**, not by copying the pivot
+   loop. If a primitive is missing, add it — but wiring a new primitive into an
+   existing strategy changes its results and is a separate change.
+4. **Do not delete strategies that perform badly.** `rsi_meanrev` and `fvg` are the
+   calibration; they are supposed to fail.
+5. **No live execution layer.** Forward tests may route to an Alpaca *paper*
+   account. Live routing is gated behind `--live` + `allow_live` and is not
+   something to enable on your own initiative.
+6. `random_entry` fails the causality gate. That is a **false positive** — its RNG
+   stream position depends on `len(df)`, not on any future bar. Do not "fix" it:
+   `validate.random_benchmark` draws from it to score every other strategy's random
+   gate, so changing it silently moves every verdict.

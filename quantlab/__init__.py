@@ -1,0 +1,1 @@
+"""quantlab — strategy validation harness."""

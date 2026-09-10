@@ -1,0 +1,109 @@
+//@version=6
+// Fair Value Gaps — 3-candle imbalance detection with mitigation tracking
+indicator("Fair Value Gaps", "FVG", overlay = true, max_boxes_count = 500, max_lines_count = 500)
+
+//══════════════════════════ Inputs ══════════════════════════
+gD = "Detection"
+sizeMode = input.string("ATR", "Minimum gap size", options = ["Off", "ATR", "Percent", "Ticks"], group = gD,
+     tooltip = "Filters out noise gaps. ATR adapts to volatility, which is usually what you want.")
+atrMult  = input.float(0.25, "ATR multiple",    minval = 0, step = 0.05, group = gD)
+atrLen   = input.int(14,     "ATR length",      minval = 1,              group = gD)
+pctMin   = input.float(0.05, "Percent of price", minval = 0, step = 0.01, group = gD)
+tickMin  = input.int(4,      "Ticks",           minval = 0,              group = gD)
+showBull = input.bool(true,  "Bullish", inline = "dir", group = gD)
+showBear = input.bool(true,  "Bearish", inline = "dir", group = gD)
+
+gM = "Mitigation"
+fillMode  = input.string("Full fill", "Gap is closed on", options = ["Wick touch", "Full fill", "Close through"], group = gM,
+     tooltip = "Wick touch = price enters the zone. Full fill = price crosses the whole zone. Close through = a bar closes past it.")
+afterFill = input.string("Delete", "When closed", options = ["Delete", "Keep faded"], group = gM)
+maxOpen   = input.int(25, "Max gaps tracked", minval = 1, maxval = 200, group = gM)
+
+gS = "Style"
+bullCol = input.color(color.new(#26a69a, 82), "Bullish", inline = "c", group = gS)
+bearCol = input.color(color.new(#ef5350, 82), "Bearish", inline = "c", group = gS)
+fadeCol = input.color(color.new(color.gray, 92), "Filled",             group = gS)
+showCE  = input.bool(true, "Show midline (consequent encroachment)", group = gS)
+extendN = input.int(15, "Extend right (bars)", minval = 0, group = gS)
+
+//══════════════════════════ Type ══════════════════════════
+type FVG
+    box   bx
+    line  ce
+    float top
+    float bot
+    bool  bull
+    bool  filled
+
+var array<FVG> zones = array.new<FVG>()
+
+atr = ta.atr(atrLen)
+
+minSize() =>
+    switch sizeMode
+        "ATR"     => atr * atrMult
+        "Percent" => close * pctMin / 100.0
+        "Ticks"   => syminfo.mintick * tickMin
+        => 0.0
+
+newZone(bool isBull, float t, float b) =>
+    col = isBull ? bullCol : bearCol
+    bx  = box.new(bar_index - 1, t, bar_index + extendN, b,
+             border_color = color.new(col, 45), bgcolor = col)
+    mid = math.avg(t, b)
+    ln  = showCE ? line.new(bar_index - 1, mid, bar_index + extendN, mid,
+             color = color.new(col, 25), style = line.style_dotted) : na
+    FVG.new(bx, ln, t, b, isBull, false)
+
+//══════════════════════════ 1. Mitigation pass ══════════════════════════
+// Runs before detection so a gap is never checked against its own forming bar.
+if array.size(zones) > 0
+    for i = array.size(zones) - 1 to 0
+        z = array.get(zones, i)
+        if not z.filled
+            hit = if z.bull
+                fillMode == "Wick touch" ? low  <= z.top : fillMode == "Full fill" ? low  <= z.bot : close < z.bot
+            else
+                fillMode == "Wick touch" ? high >= z.bot : fillMode == "Full fill" ? high >= z.top : close > z.top
+
+            if hit
+                z.filled := true
+                alert((z.bull ? "Bullish" : "Bearish") + " FVG closed", alert.freq_once_per_bar)
+                if not na(z.ce)
+                    line.delete(z.ce)
+                if afterFill == "Delete"
+                    box.delete(z.bx)
+                    array.remove(zones, i)
+                else
+                    box.set_bgcolor(z.bx, fadeCol)
+                    box.set_border_color(z.bx, fadeCol)
+                    box.set_right(z.bx, bar_index)
+            else
+                box.set_right(z.bx, bar_index + extendN)
+                if not na(z.ce)
+                    line.set_x2(z.ce, bar_index + extendN)
+
+//══════════════════════════ 2. Detection ══════════════════════════
+// Confirmed bars only — nothing is drawn from an unfinished candle, so no repaint.
+if barstate.isconfirmed and bar_index > 2
+    sz = minSize()
+
+    if showBull and low > high[2] and (low - high[2]) >= sz
+        array.push(zones, newZone(true, low, high[2]))
+        alert("Bullish FVG formed", alert.freq_once_per_bar)
+
+    if showBear and high < low[2] and (low[2] - high) >= sz
+        array.push(zones, newZone(false, low[2], high))
+        alert("Bearish FVG formed", alert.freq_once_per_bar)
+
+//══════════════════════════ 3. Trim oldest ══════════════════════════
+while array.size(zones) > maxOpen
+    old = array.shift(zones)
+    box.delete(old.bx)
+    if not na(old.ce)
+        line.delete(old.ce)
+
+//══════════════════════════ Debug output ══════════════════════════
+// Uncomment to read open gap count via data_get_pine_tables / pine_get_console
+// if barstate.islast
+//     log.info("open gaps: " + str.tostring(array.size(zones)))
