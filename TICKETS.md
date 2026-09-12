@@ -9,8 +9,9 @@ deleting it when the commit that fixes it lands. Order matters and is stated.
    (plain code, no LLM in the loop)
 2. **T-7 indicator + human-exit experiment** — build only after T-1 and T-4
    are live; its Part 1 (trailing benchmark) and Part 2 (wide funnel) are
-   done (2026-09-12, `DESIGN-tjr-human.md` §1 and §2.2); three definitions
-   need the user's call before the build (§2.2)
+   done (2026-09-12, `DESIGN-tjr-human.md` §1 and §2.2); the three
+   definitions are decided (§2.3) and §5 is amended (stop choice at fill,
+   ten-rule benchmark, `n_trials` 10, underwater-exit statistic)
 3. **T-3 bootstrap ignores the rebalance band** — before any batch of new
    routed runs
 4. **T-2 incubation gate** (carried; not re-confirmed in the latest ordering)
@@ -51,9 +52,11 @@ no gauntlet. *Done:* NQ 149 → 78 → 66 → 66 → 41 fills, ES 149 → 95 →
 and 26. Most of the widening comes through two definitions that barely
 filter (`ifvg` on already-inverted gaps; `eq` in discount by construction)
 and the ambiguity rule removes more round-1 sweeps than the new levels add.
-**Open before the build, the user's call:** `ifvg` fresh-only or literal;
-`eq` as a zone (keep / require a pullback / pair it); ambiguity within a
-level class or POC/HVN as targets only. Build after T-1 and T-4 are live —
+**Decided 2026-09-12** (`DESIGN-tjr-human.md` §2.3): `ifvg` fresh-only;
+`eq` valid only as a retrace into it (≥ 0.5 ATR beyond the midpoint first),
+co-occurrence logged; ambiguity within a level class, POC / HVN as targets
+only. The funnel is re-run once under the three (§2.4) for the fill count the
+experiment will produce. Alert path approved as recommended (§7). Build after T-1 and T-4 are live —
 the run needs the kill rules and the push channel, and its human controls
 ride the same Telegram bot. Never goes live on the box before a dry run is
 shown.
@@ -61,7 +64,9 @@ shown.
 **Open cost item.** The signal layer runs on live ES/NQ 1-minute and 5-minute
 bars. The VPS has no futures feed (Alpaca serves none). Options and their
 reliability are in `DESIGN-tjr-human.md` §7; the paid live feed is the same
-line item T-5 flags.
+line item T-5 flags. **Flag the monthly cost to the user when either T-5 or
+T-7 deploys, before anything is bought.** The interim path for the sample
+(Windows PC on the TradingView feed) needs no feed purchase.
 
 ## T-8 — POC / HVN standalone test
 
@@ -82,7 +87,9 @@ commodities, bonds). `donchian` exists in the registry as a single-instrument
 strategy; the basket version is a panel strategy (`kind="panel"`, book-level
 vol targeting) over a universe wide enough to mean something.
 
-**Data flag, to be costed when we get there:** a diversified futures basket
+**Data flag, to be costed when we get there — now flagged by T-7 as well
+(live ES/NQ minute bars); the monthly cost goes to the user when either
+deploys:** a diversified futures basket
 needs a paid CME (and ideally ICE/Eurex) history feed — Databento or Norgate
 are the usual retail-priced options. TradingView's continuous contracts cover
 the CME index futures we have used so far but not a 20–50 contract universe

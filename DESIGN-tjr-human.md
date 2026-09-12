@@ -267,6 +267,46 @@ admissible 4-hour pivot above the close), H1 swing highs on 7 / 4, H4 lows on
 flatter (six on 100 days, three to five on 46), so HVN is a thinner level set
 on ES.
 
+### 2.3 Decisions on §2.2 (2026-09-12) — the spec for the build and for one re-run
+
+Three definitions, decided by the user on the Part 2 findings. They replace
+the literal readings of §2.1 for `tjr_human` and for the single re-run of the
+funnel recorded in §2.4. They were chosen on funnel counts; no outcome has
+been measured, so §5's deflation count does not move for them.
+
+1. **`ifvg`: fresh inversion only.** A bearish gap of day D confirms a long
+   only if no bar between its completion and the sweep bar (inclusive) closed
+   above it; the inverting close is on a bar strictly after the sweep bar.
+   Shorts mirror. This is the "fresh" reading of §2.1; the literal reading is
+   dropped.
+2. **`eq`: valid only as a retrace into it.** The midpoint is frozen at the
+   confirmation bar, as before. A touch counts only if price has first been at
+   least 0.5 × ATR beyond the midpoint on the far side: for a long, some
+   completed bar *j* with sweep bar ≤ *j* < touching bar has high ≥ EQ + 0.5 ×
+   ATR; for a short, low ≤ EQ − 0.5 × ATR. ATR is ATR(14) of the 5-minute
+   frame at the confirmation bar (on 1-minute entries, at the newest completed
+   5-minute context bar — `DESIGN-tjr-intraday.md` §11.4's convention). The
+   range extreme through the confirmation bar is already on the far side, so
+   the condition is met at confirmation whenever the dealing range is at least
+   one ATR wide, and otherwise waits for a later bar to extend that far. The
+   zone's `formed` stamp stays the confirmation bar (its rank among zones is
+   unchanged); it becomes *usable* at the excursion bar. No second zone type is
+   required; co-occurrence — which other zone types were in discount when an
+   `eq` fill was taken — is logged per trade and reported.
+3. **Ambiguity within a level class; POC and HVN are targets only.** The sweep
+   levels are the directional set — ASIA_H/L, LON_H/L, PDH/PDL, H1_SH/SL,
+   H4_SH/SL — in five classes by type. POC_PREV and HVN_1..6 are computed and
+   logged every day and serve as T1 / T2 candidates (the next opposing level of
+   any type); they are not swept — they are not TJR's, and T-8 tests them on
+   their own. Round 1's test (`sweep_of_levels`) runs per class: a class whose
+   wick took one of its lows *and* one of its highs abstains for that bar;
+   among the classes that return a sweep (breached, closed back inside), if all
+   give the same side the bar sweeps on that side and the setup's level is the
+   deepest breached level of that side across those classes; if two classes
+   give opposite sides the bar is ambiguous and skipped, and the next bar in
+   the window may still sweep. A bar on which no class returns a sweep is not
+   a sweep. Every level the wick took, in any class, is recorded.
+
 ## 3. Part 3 — `tjr_human` (T-7)
 
 ### 3.1 Signal layer
@@ -275,15 +315,19 @@ on ES.
   09:50–10:10 ET, flat by 15:55; NQ and ES; 5-minute structure with 1-minute
   entry confirmation (the two-timeframe model of `DESIGN-tjr-intraday.md`
   §11.3).
-- Sweep: wick through a §2 key level, close back inside.
+- Sweep: wick through a §2.3 sweep level (the directional set; ambiguity
+  judged within a level class), close back inside.
 - Confirmation: any of the three §2 confirmations, on 1-minute bars, after
-  the sweep.
-- Zone: any of the four §2 zones, in discount / premium of the dealing range.
+  the sweep; `ifvg` on a fresh inversion only (§2.3).
+- Zone: any of the four §2 zones, in discount / premium of the dealing range;
+  `eq` only as a retrace into it (§2.3).
 - Entry: price returns to the zone **and** a 1-minute candle closes out of
   the zone in the trade direction. Enter at the next bar's open.
-- Initial stop: beyond the sweep wick (round 1's definition), the fixed
-  baseline.
-- Targets: next opposing key level (T1), then the one beyond it (T2).
+- Initial stop: **the human's choice at fill, within [wick, 2.0 ATR]** (§3.3
+  `STOP`, §5 amendment); the wick stop (round 1's definition) is the default
+  when no choice arrives in time.
+- Targets: next opposing key level of any §2 type, POC and HVN included (T1),
+  then the one beyond it (T2).
 - The bot takes every paper entry itself. The human does not pick entries.
 
 ### 3.2 Chart output
@@ -299,29 +343,40 @@ not depend on it.
 | control | when | rule |
 |---|---|---|
 | `SKIP` | from signal until fill | logged with the signal's full state, and later with what the trade would have done |
-| `MOVE STOP` | while in the trade | **only in the trade's favour**; a widen is rejected and logged as an attempt with the requested price |
+| `STOP <price>` | from signal until 60 s after the fill, once per trade | the initial stop; accepted only between the wick stop and the 2.0 ATR stop (both prices are in the signal alert, with the 1.0 ATR, 1.5 ATR and session stops for reference); outside that band → rejected and logged with the requested price; none by the deadline → the wick stop |
+| `MOVE STOP` | while in the trade, after the `STOP` window | **only in the trade's favour**; a widen is rejected and logged as an attempt with the requested price |
 | `EXIT NOW` | while in the trade | closes at market; logged |
 
-No other input. No sizing, no target changes, no entry choice.
+No other input. No sizing, no target changes, no entry choice. The initial
+stop is the one place the human may be wider than the rules; from the moment
+it is set, the stop only tightens.
 
 ### 3.4 Journaling — the bot writes everything, the human writes nothing
 
 Per action: timestamp (ms), price, seconds since entry, unrealised R at that
 moment, the action, a reason code from `{noise, structure_changed, news,
-gut}`. Per trade: level type, confirmation type, zone type, instrument,
-entry, initial stop, every stop move, exit, exit reason, realised R, MAE,
-MFE, whether T1 / T2 printed and when. And per trade, on the same entry: what
-the fixed stop, each §1 rule, and a uniformly random stop in [0.5, 2.0] ATR
-would have done.
+gut}`. Per trade: level type, confirmation type, zone type, the other zone types in
+discount at the fill (§2.3 co-occurrence), instrument, entry, the five
+candidate stops at fill (wick, 1.0 / 1.5 / 2.0 ATR, session) and the one
+chosen with seconds from fill to choice, every stop move, exit, exit reason,
+realised R against the chosen stop, MAE, MFE, whether T1 / T2 printed and
+when. And per trade, on the same entry: what each of the ten mechanical exits
+of §5 (the wick fixed stop, the five §1 rules from it, the four round-2 fixed
+stops) and a uniformly random stop in [0.5, 2.0] ATR would have done, each
+in R against its own initial risk.
 
 ### 3.5 → §5. Pre-registration.
 
 ### 3.6 Weekly report (Sunday, from the journal, by the box)
 
-- human R/trade vs fixed stop, each §1 rule, and the random stop
-- behaviour: stop moves within 2 minutes of entry; exits before any rule
-  would have exited; widen attempts; signals skipped and what they did
-- branches: R by level type, confirmation type, zone type
+- human R/trade vs each of the ten mechanical exits and the random stop
+- behaviour: stop width chosen (distribution, R by width); stop moves within
+  2 minutes of entry; **exits while underwater before any of the ten exits
+  would have closed the trade** (count, R at exit, what the trade then did
+  under the human's own initial stop); widen attempts; signals skipped and
+  what they did
+- branches: R by level type, confirmation type, zone type; `eq` fills by
+  co-occurring zone type
 - trades to go; current trajectory against the §5 bar
 
 ## 4. Part 4 — POC / HVN standalone (T-8)
@@ -352,6 +407,39 @@ Counted as trials.
   scored.
 - Neither the sample size nor the bar changes after trade one.
 
+**Amendment, 2026-09-12, before trade one.** Part 1's table changed the
+experiment: the four round-1 trades whose target printed later did so at
+10:20–14:05 after going 1.2–2.1 R against the entry (MAE −1.78, −2.08, −1.78,
+−1.20), and three of the eight stopped on their entry bar. A layer that
+harvests that is holding through hours of drawdown, not tightening — and a
+human who may only tighten from the wick cannot beat the fixed stop on exactly
+the trades that point to an edge. So:
+
+- **The initial stop is the human's, chosen at fill within [wick, 2.0 ATR]**
+  (§3.3 `STOP`). The choice and the candidates are logged. It is one more
+  adjustable choice: **`n_trials` = 10**, not 9. After the fill the
+  widen-rejection stays; the stop only moves in the trade's favour.
+- **Benchmark set: ten mechanical exits** on the same 100 entries — the wick
+  fixed stop, the five §1 trailing rules from it, and the four round-2 fixed
+  stops (1.0, 1.5, 2.0 ATR, session; `DESIGN-tjr-intraday.md` §11.4). The
+  scored benchmark is the best of the ten on those entries, in-sample for the
+  rules as before. Nothing in the set can widen after fill, so the set spans
+  exactly the freedom the human has at fill and none of the freedom after it.
+- **R is measured against each exit's own initial risk**, the human's against
+  the stop the human chose — as the round-2 table did. That is what a
+  position sized to its stop experiences; it is also why a wide stop is not
+  free: the same excursion pays fewer R.
+- **Pass, unchanged in form:** `d_i = R_human,i − R_best_of_ten,i` over the 100
+  trades through `validate.deflated_sharpe` with `n_trials = 10`, ≥ 0.95,
+  `mean(d) > 0`.
+- **Behaviour statistic, reported, not scored:** trades exited by `EXIT NOW`
+  while underwater (unrealised R < 0) before any of the ten mechanical exits
+  would have closed them — the count, R at exit, and what each did afterwards
+  under the human's own initial stop.
+- Ten is the count as instructed (one more choice). A stricter count would
+  also add the four new fixed-stop comparators, fourteen. If that is the
+  count wanted, it is said before trade one; after, it is fixed.
+
 ## 6. What "beating the rule" would and would not show
 
 A pass says one person, on 100 trades, over the weeks it takes to collect
@@ -378,6 +466,14 @@ The live futures feed is the same line item `TICKETS.md` flags for T-5:
 Databento live (pay-as-you-go, CME) is the usual retail-priced option. It is
 costed when T-7's build starts, with T-5 in mind; if the interim path is
 used for the sample, the experiment does not wait on it.
+
+**Approved 2026-09-12, as recommended.** The VPS detects the signal and pushes
+to Telegram; `SKIP`, `STOP`, `MOVE STOP` and `EXIT NOW` are commands to the
+same bot (T-4's); the TradingView MCP bridge draws the §3.2 chart and does
+nothing else. Interim, for the 100-trade sample: the Windows PC runs the same
+detector on the TradingView feed and pushes to the same bot. The CME feed is
+now flagged by both T-5 and T-7; its monthly cost is put in front of the user
+when either deploys, before anything is bought.
 
 ## 8. What is not in scope
 
