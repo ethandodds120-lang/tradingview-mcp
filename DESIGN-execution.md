@@ -68,10 +68,18 @@ In `_decide`, once `pending` is set for bar t (and only if `move`):
    run_id sanitised to `[A-Za-z0-9-]`).
 3. Send now:
    - crypto: marketable limit at `mid*(1 ± limit_bps/1e4)` (buy +, sell −),
-     TIF GTC, wait `limit_wait_s`; then **cancel and confirm** (re-query until
-     status ∈ {canceled, filled, expired, rejected}; never send the fallback
-     while status is `pending_cancel`); if remaining > 0 send market for the
-     remainder (`fallback`). Fill = VWAP across legs.
+     **anchored to the touch**: a buy is never below the ask and a sell never
+     above the bid. On a tight book that is exactly mid ± bps; on a wide one it
+     is the price that actually trades. Verified the hard way: a sell at
+     mid − 5 bps sat inside a 56 bps LTC/USD spread for the whole wait and went
+     to market on the fallback, 17 bps worse; anchored, the same sell filled as
+     a limit. TIF GTC, wait `limit_wait_s`; then **cancel and confirm**
+     (re-query until status ∈ {canceled, filled, expired, rejected}; never send
+     the fallback while status is `pending_cancel`); if remaining > 0 send
+     market for the remainder (`fallback`). Fill = VWAP across legs.
+     The venue's own floor applies before any of this: Alpaca refuses crypto
+     orders under $10 of cost basis, so a delta under that is skipped as too
+     small, not sent to be refused.
    - equity: market-on-open, `TimeInForce.OPG`, whole units (Alpaca fractional
      orders are DAY-only; `_whole_units_only` must return True for OPG). The
      poll does not wait for the fill. **Not sent at decision time**: Alpaca
