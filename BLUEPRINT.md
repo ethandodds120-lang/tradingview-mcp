@@ -77,6 +77,78 @@ If the aim is a working blueprint fastest: **stocks on Alpaca** (already possibl
 zero new code), then **forex on OANDA** (clean REST), then **futures on IBKR**
 (hardest, do last).
 
+## The other gap: every strategy here is single-instrument
+
+`Strategy` is `(df, **params) -> position Series` for one asset, and `engine.run`
+backtests one position series against one price series. That shuts out an entire
+family: cross-sectional momentum, pairs, ETF flow reversal, anything that ranks a
+universe and holds many names at once. You cannot express "rank 20 ETFs, long the
+top quintile, short the bottom" in the current contract at all.
+
+This was scoped with a working prototype on a real 20-ETF, 1000-bar panel, not
+estimated. Findings:
+
+**`engine.run_panel` is about 35 lines** and can return the same `BacktestResult`
+the package already consumes. Every rule generalises cleanly:
+
+| single-asset | panel |
+|---|---|
+| `held = desired.shift(1)` | `held = weights.shift(1)` — same lag, whole row |
+| cost on `\|position.diff()\|` | cost on L1 turnover of the row |
+| vol target off asset vol | vol target off the **book's** realised vol |
+
+That last row matters beyond this feature: scaling each leg to its own vol target
+is exactly the stacking bug `paper.py portfolio` exists to report. A panel engine
+has to size the book, which is the right behaviour everywhere.
+
+**The three newest gates work on panel output unchanged.** Verified, not assumed —
+`deflated_sharpe`, `probability_of_backtest_overfitting` and
+`drawdown_distribution` only ever see a return series, so they neither know nor
+care how many instruments produced it.
+
+**`causality_check` generalises for free.** Its diff works on a DataFrame signal
+as-is; the prototype's cross-sectional momentum returned a max weight difference
+of 0.00e+00 across three truncations.
+
+**The coupling is five lines.** `engine.run(...)` is called at exactly five places
+in `validate.py` — twice in `walk_forward`, once each in `trial_matrix`,
+`random_benchmark` and `cost_sweep`. Give `Strategy` a `kind` field and a
+`backtest()` method that dispatches to `run` or `run_panel`, replace those five
+call sites, and four of the five validators become panel-capable with no other
+change. Date-based slicing already works, because a wide price panel has dates as
+rows.
+
+### What actually needs new code
+
+1. **`engine.run_panel`** — written and tested in the prototype.
+2. **A panel random benchmark.** `random_entry` returns one Series; the panel
+   version needs random weight rows with matched turnover. This is the only
+   genuinely new logic, maybe 20 lines.
+3. **`metrics.summary`'s trade count is wrong for panels.** It counts sign flips of
+   `position`, but a panel's `position` is gross exposure and never goes negative.
+   On the prototype it reported **1 trade for a strategy that rebalanced 47 times**.
+   Needs a turnover-based count when the result came from a panel.
+4. **`run.py` needs a different benchmark row.** `buy_hold` on "the strategy's
+   instrument" is meaningless when there are twenty; use an equal-weight universe.
+
+Roughly 100 lines of new code plus mechanical edits. Worth doing before adding a
+third broker adapter — it unlocks more strategy families than futures access does,
+and it needs no new venue, credentials, or money.
+
+### Prototype result, for calibration
+
+Cross-sectional momentum on 20 liquid ETFs, 2bps per side, 2022-2026:
+
+```
+  Sharpe 0.43   CAGR 5.08%   MaxDD -19.75%   t 0.86
+  DSR 0.964 over 6 trials     PBO 6%
+```
+
+That DSR and PBO are better than anything currently in the registry — it is the
+first thing tested here to clear the deflation gate. Do not get excited: t is 0.86
+on four years of data, which is not evidence of anything. It is a reason to build
+the panel engine properly and test the family honestly, not a reason to trade it.
+
 ## Infrastructure changes for N runs
 
 ### 1. One systemd unit for all runs
