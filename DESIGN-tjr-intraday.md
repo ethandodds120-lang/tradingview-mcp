@@ -190,7 +190,87 @@ for any path-dependent model, not just the one named `tjr`.
 At 2 ticks: ES 1.42, NQ 0.42. Run at `--cost-bps 1` (ES) and `0.5` (NQ) as
 "real", and `2` for both as "conservative". The cost sweep covers the rest.
 
-## 9. Acceptance
+## 9. Findings (2026-09-12, TradingView data, 149 sessions)
+
+**The funnel.** Of 149 sessions, the sweep window produced a qualifying sweep on
+roughly 93 (NQ) and 97 (ES). BOS followed within the window on about half of
+those. A zone in discount/premium existed on a third of the BOS days. Fills:
+
+| | sweeps | BOS | zone | filled | wins |
+|---|---|---|---|---|---|
+| NQ base | 93 | 50 | 34 | **7** | 0 |
+| NQ SMT | 93 | 22 | 13 | **3** | 0 |
+| ES base | 97 | 46 | 24 | **1** | 0 |
+| ES SMT | 97 | 15 | 9 | **1** | 0 |
+
+Every fill was an **inverted FVG**. Across 149 sessions on two instruments, not
+one three-candle gap formed on the displacement leg below equilibrium — the
+leg from the sweep wick to the BOS is two or three 5-minute bars and rarely
+leaves a gap at all, let alone one in the cheap half of the range. The 16 grid
+trials with `allow_ifvg=False` therefore never trade; the 16 that do are all
+between −1.0 and −2.3 Sharpe. The best of 32 trials is the one that never fires.
+
+**Why every trade stopped out.** The geometry of the eight base-variant trades:
+
+```
+stop distance      median 14.3 bps  = 0.94 ATR of one 5-minute bar
+stopped on the entry bar             3 of 8
+target printed later the same day    5 of 8
+best excursion in the trade's favour median 3.4 R — after the stop had fired
+```
+
+The direction call — sweep, then a run to the next pool — was right five times
+in eight. The stop rule, "beyond the sweep wick", places the stop inside the
+range of a single 5-minute bar, so the retrace that fills the zone routinely
+runs through it before the move the setup predicted. This is precisely the
+step a discretionary trader "manages" by hand, and it is why discretionary
+win-rate claims for this model cannot be checked: the rule that kills the
+mechanical version is the one the discretionary version does not commit to.
+
+**The SMT filter** removes 55–59 sweep days as "pair also swept" and changes
+nothing about the outcome: the survivors are a subset of the same losers.
+
+**The gauntlet**, full run, real costs (NQ 0.5 bps, ES 1 bps round trip) and a
+conservative 2 bps; walk-forward 5 folds; 300-trial random benchmark with the
+coin flips holding as long as the strategy does; gates 8 (7 where the grid best
+never trades and DSR is undefined). Raw printouts in `results/tjr_intraday/`.
+
+| run | trades | wins | IS Sharpe | buy&hold | OOS Sharpe | folds+ | vs random | breakeven | gates |
+|---|---|---|---|---|---|---|---|---|---|
+| NQ base, 0.5 bps | 7 | 0 | −2.29 | +0.82 | −1.44 | 0% | 12th pct | 0 bps | 2/8 |
+| NQ SMT, 0.5 bps | 3 | 0 | −2.31 | +0.82 | −1.53 | 0% | 10th pct | 0 bps | 2/8 |
+| ES base, 1 bps | 1 | 0 | −1.51 | +0.43 | −1.65 | 0% | 85th pct | 0 bps | 1/7 |
+| ES SMT, 1 bps | 1 | 0 | −1.51 | +0.43 | −1.65 | 0% | 85th pct | 0 bps | 1/7 |
+| NQ base, 2 bps | 7 | 0 | −2.49 | +0.31 | −1.49 | 0% | 67th pct | 0 bps | 2/8 |
+| NQ SMT, 2 bps | 3 | 0 | −2.47 | +0.31 | −1.70 | 0% | 68th pct | 0 bps | 2/8 |
+| ES base, 2 bps | 1 | 0 | −1.62 | +0.07 | −1.78 | 0% | 98th pct | 0 bps | 2/7 |
+| ES SMT, 2 bps | 1 | 0 | −1.62 | +0.07 | −1.78 | 0% | 98th pct | 0 bps | 2/7 |
+
+Deflated Sharpe against the cumulative 32 trials: **undefined** — the best trial
+is one that never trades (Sharpe exactly 0), and every trial that does trade is
+negative. The expected best-of-32 from pure noise would have been +1.82.
+
+The gates that "pass" are artefacts of not trading, not of merit: PBO reads 50%
+because half the grid columns are identical zeros; the ruin gate passes because
+seven one-R losses on a vol-targeted 5-minute book draw down about 1%. The ES
+runs' "beats 85–98% of random entries" is the same artefact from the other side:
+a one-trade strategy against coin flips that hold one bar and pay costs on
+every flip. Every gate that measures an edge fails, on both instruments, both
+variants, both cost levels.
+
+Costs did not decide this. Breakeven is 0 bps on every run — the gross Sharpe
+is already negative — and the difference between real and conservative costs is
+a rounding error against a strategy losing 1R on every fill.
+
+The daily-bar version of this sequence failed by producing an edge too small to
+survive its search and its costs. The intraday version fails differently: the
+rules, followed exactly, produce a trade on roughly one session in twenty, and
+that trade is stopped before the move it predicted arrives. Not one of the 12
+won. Twelve trades is not a sample, and none of the above is evidence about the
+market; all of it is a description of what his rules do when a program follows
+them.
+
+## 10. Acceptance
 
 - `causality_check` clean (6 truncations) on both ES and NQ frames, both variants.
 - On `--synthetic` daily data: all-flat, no exception, `--compare` still runs.

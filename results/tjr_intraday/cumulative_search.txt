@@ -1,0 +1,50 @@
+  data: data/ES_5min_tv.csv  +  data/NQ_5min_tv.csv
+  NQ base  N=8  best +0.00  median -0.50  worst -2.29
+  NQ smt   N=8  best +0.00  median -0.67  worst -2.31
+  ES base  N=8  best +0.00  median -0.76  worst -1.51
+  ES smt   N=8  best +0.00  median -0.76  worst -1.51
+
+  everything tried: 32 trials across 4 runs
+  best of all: NQ base  sharpe +0.00  stop_buffer_atr=0.0  min_fvg_atr=0.0  allow_ifvg=False
+
+  DEFLATED SHARPE of the best trial
+    against its own grid  (N= 8):  expected max from noise +1.42   DSR nan
+    against everything    (N=32):  expected max from noise +1.82   DSR nan   <- the honest one
+    gate: DSR >= 0.95  ->  FAIL
+
+  PBO across all 32 trials pooled: 47% over 68 splits  (gate <= 60%: PASS)
+
+  every trial, sorted:
+       run  stop_buffer_atr  min_fvg_atr  allow_ifvg  sharpe  max_dd
+   NQ base            0.000        0.000       False   0.000   0.000
+   NQ base            0.000        0.250       False   0.000   0.000
+   NQ base            0.250        0.250       False   0.000   0.000
+   NQ base            0.250        0.000       False   0.000   0.000
+    NQ smt            0.250        0.000       False   0.000   0.000
+    NQ smt            0.250        0.250       False   0.000   0.000
+    NQ smt            0.000        0.250       False   0.000   0.000
+    NQ smt            0.000        0.000       False   0.000   0.000
+    ES smt            0.000        0.000       False   0.000   0.000
+    ES smt            0.000        0.250       False   0.000   0.000
+    ES smt            0.250        0.250       False   0.000   0.000
+    ES smt            0.250        0.000       False   0.000   0.000
+   ES base            0.250        0.000       False   0.000   0.000
+   ES base            0.250        0.250       False   0.000   0.000
+   ES base            0.000        0.250       False   0.000   0.000
+   ES base            0.000        0.000       False   0.000   0.000
+   NQ base            0.000        0.250        True  -1.006  -0.006
+    NQ smt            0.000        0.250        True  -1.340  -0.002
+   NQ base            0.250        0.250        True  -1.428  -0.008
+   ES base            0.250        0.250        True  -1.510  -0.001
+    ES smt            0.000        0.250        True  -1.510  -0.001
+   ES base            0.250        0.000        True  -1.510  -0.001
+   ES base            0.000        0.000        True  -1.510  -0.001
+   ES base            0.000        0.250        True  -1.510  -0.001
+    ES smt            0.250        0.000        True  -1.510  -0.001
+    ES smt            0.000        0.000        True  -1.510  -0.001
+    ES smt            0.250        0.250        True  -1.510  -0.001
+    NQ smt            0.250        0.250        True  -1.863  -0.004
+    NQ smt            0.000        0.000        True  -1.923  -0.005
+   NQ base            0.000        0.000        True  -1.985  -0.009
+   NQ base            0.250        0.000        True  -2.289  -0.011
+    NQ smt            0.250        0.000        True  -2.307  -0.007

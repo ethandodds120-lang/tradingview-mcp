@@ -42,6 +42,12 @@ directional, not precise.
    (practitioner): mechanical SMC win rates 38–48% with double-digit losing
    streaks; the 70–80% discretionary rates collapse to ~41% when coded.
    → `tjr`, `fvg`, `tjr_intraday`, `tjr_intraday_smt`: **folklore**.
+   In-house (2026-09, `DESIGN-tjr-intraday.md` §9): TJR's session rules made
+   mechanical on 149 sessions of ES and NQ 5-minute bars — 12 trades across
+   both instruments and the SMT variant, 0 wins, walk-forward OOS Sharpe −1.4
+   to −1.8, every one of 32 grid trials at or below zero. The direction call
+   was right 5 of 8 times; the stop rule sits inside one bar's range and fires
+   first.
 
 ## What ICT gestures at that *is* documented
 
