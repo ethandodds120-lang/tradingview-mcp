@@ -54,6 +54,23 @@ def load_csv(path: str) -> pd.DataFrame:
     return df[["open", "high", "low", "close", "volume"]]
 
 
+def load_futures_pair(traded_csv: str, pair_csv: str) -> pd.DataFrame:
+    """The traded instrument's OHLCV with the other index alongside, bar for bar.
+
+    The SMT variant of the intraday TJR model needs to know what the pair did on
+    the *same* bar as the sweep — ES sweeping its Asia low while NQ held its own
+    is the divergence the rule keys on. That is a per-bar comparison, so the two
+    files are inner-joined on timestamp: a bar either side lacks is dropped rather
+    than forward-filled, because a stale pair bar would make the divergence test
+    compare different moments. The pair's columns are prefixed `pair_`; nothing
+    else about the traded frame changes, and `Bars.from_frame` ignores the extras.
+    """
+    traded = load_csv(traded_csv)
+    pair = load_csv(pair_csv)[["open", "high", "low", "close"]]
+    pair.columns = [f"pair_{c}" for c in pair.columns]
+    return traded.join(pair, how="inner")
+
+
 def load_yahoo(ticker: str, start: str = "2000-01-01", interval: str = "1d") -> pd.DataFrame:
     """Optional convenience loader. Requires `pip install yfinance` and network access."""
     import yfinance as yf
@@ -98,18 +115,35 @@ def periods_per_year(index: pd.DatetimeIndex) -> float:
         return 12.0
     if median_gap >= 86400 * 5:
         return 52.0
+    days = _trading_days_per_year(index)
     if median_gap >= 86400:
-        # A daily index is not always an equity calendar. Crypto prints every
-        # day of the week, and annualising that with 252 understates its vol by
-        # sqrt(365/252) — 17% — which quietly turned a 15% vol target into ~18%
-        # on the first routed SOL run. A calendar with no weekend gap anywhere
-        # in its recent history is a 7-day calendar; anything with a gap of two
-        # days or more is trading sessions and stays on 252.
-        gaps = pd.Series(index).diff().dt.total_seconds().dropna().tail(90)
-        if len(gaps) >= 28 and (gaps < 86400 * 1.5).all():
-            return 365.25
-        return 252.0
-    return 252.0 * (6.5 * 3600 / median_gap)
+        return days
+    # Intraday: count the bars a day actually has instead of assuming a 6.5h
+    # equity session. Futures print ~276 five-minute bars a session and crypto
+    # 288; the old 78-bar assumption annualised their Sharpe with sqrt(78/276),
+    # understating it by nearly half. Partial days (the Sunday-evening open, a
+    # truncated first or last day in the file) are dropped before the median.
+    per_day = pd.Series(1, index=index).groupby(index.normalize()).size()
+    per_day = per_day[per_day >= per_day.max() * 0.5]
+    bars_per_day = float(per_day.median()) if len(per_day) else 6.5 * 3600 / median_gap
+    return days * bars_per_day
+
+
+def _trading_days_per_year(index: pd.DatetimeIndex) -> float:
+    """252 for a calendar that skips weekends, 365.25 for one that does not.
+
+    Crypto prints every day of the week, and annualising that with 252
+    understates its vol by sqrt(365/252) — 17% — which quietly turned a 15% vol
+    target into ~18% on the first routed SOL run. A calendar with no gap of two
+    days or more anywhere in its recent history is a 7-day calendar; anything
+    else is trading sessions. Judged on distinct dates so intraday and daily
+    indexes get the same answer.
+    """
+    dates = pd.Series(index.normalize().unique()).sort_values().tail(90)
+    gaps = dates.diff().dt.total_seconds().dropna()
+    if len(gaps) >= 28 and (gaps < 86400 * 1.5).all():
+        return 365.25
+    return 252.0
 
 
 # ────────────────────────── panel data ──────────────────────────

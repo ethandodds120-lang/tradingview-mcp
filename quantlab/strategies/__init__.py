@@ -74,6 +74,9 @@ class Strategy:
     # 'single' takes an OHLCV frame and returns a position Series.
     # 'panel' takes a dates x tickers price frame and returns a weight DataFrame.
     kind: str = "single"
+    # Path-dependent models expose their trade list here, so run.py can print
+    # trade detail without knowing the strategy's name.
+    simulate: Callable[..., Any] | None = None
 
     def __post_init__(self):
         # Defaults exist only so the dataclass is constructible; a strategy that
@@ -136,6 +139,45 @@ REGISTRY: Dict[str, Strategy] = {
         evidence="folklore",
         source="TJR / ICT trading community. No peer-reviewed support found for "
                "any component of the sequence.",
+        simulate=predictive.tjr.simulate,
+    ),
+    # The session-based model on 5-minute ES/NQ (DESIGN-tjr-intraday.md). Same
+    # sweep -> BOS -> FVG sequence as tjr but on his clock: six levels fixed before
+    # the open, one setup a day. Goes all-flat on a frame with no 09:30 ET bar.
+    # The grid is deliberately small — every parameter raises the deflation bar
+    # (rule 7); N = 8 here, 32 across both variants and both instruments.
+    "tjr_intraday": Strategy(
+        "tjr_intraday", predictive.tjr_intraday.signal,
+        dict(predictive.tjr_intraday.DEFAULTS),
+        {"stop_buffer_atr": [0.0, 0.25],
+         "min_fvg_atr": [0.0, 0.25],
+         "allow_ifvg": [True, False]},
+        family="predictive",
+        thesis="The 09:30 sweep of an overnight or prior-day extreme is engineered "
+               "to take resting stops, and the reversal it starts runs to the "
+               "opposite pool of liquidity.",
+        evidence="folklore",
+        source="TJR / ICT trading community, session-based model. No peer-reviewed "
+               "support; see RESEARCH.md.",
+        simulate=predictive.tjr_intraday.simulate,
+    ),
+    # Same rules, plus the SMT filter: needs the other index joined in as
+    # pair_high/pair_low (data.load_futures_pair, run.py --pair-csv).
+    "tjr_intraday_smt": Strategy(
+        "tjr_intraday_smt", predictive.tjr_intraday.signal,
+        {**predictive.tjr_intraday.DEFAULTS, "smt": True},
+        {"stop_buffer_atr": [0.0, 0.25],
+         "min_fvg_atr": [0.0, 0.25],
+         "allow_ifvg": [True, False]},
+        family="predictive",
+        thesis="The 09:30 sweep of an overnight or prior-day extreme is engineered "
+               "to take resting stops, and the reversal it starts runs to the "
+               "opposite pool of liquidity — and ES/NQ divergence at the sweep "
+               "marks it as a manipulation rather than a breakdown.",
+        evidence="folklore",
+        source="TJR / ICT trading community, session-based model. No peer-reviewed "
+               "support; see RESEARCH.md.",
+        simulate=predictive.tjr_intraday.simulate,
     ),
     "fvg": Strategy(
         "fvg", fvg, {"min_atr": 0.25, "atr_len": 14, "hold": 10},

@@ -43,6 +43,15 @@ def load(args) -> tuple[pd.DataFrame, str, bool]:
     if args.panel_synthetic:
         return (data.synthetic_panel(n=args.synthetic_bars, seed=args.seed),
                 "SYNTHETIC CORRELATED PANEL", True)
+    if args.pair_csv and not args.csv:
+        # silently running the SMT variant with no pair data would look like a
+        # result; refuse rather than fall through to the synthetic walk
+        raise SystemExit("--pair-csv needs --csv: the pair is joined to the traded file")
+    if args.csv and args.pair_csv:
+        # the SMT variant reads the other index at the same bar, so it rides
+        # along in the frame rather than being a second load inside the strategy
+        return (data.load_futures_pair(args.csv, args.pair_csv),
+                f"{args.csv} + pair {args.pair_csv}", False)
     if args.csv:
         return data.load_csv(args.csv), args.csv, False
     if args.yahoo:
@@ -177,6 +186,10 @@ def main():
     ap = argparse.ArgumentParser(description="Quantitative strategy validation harness")
     src = ap.add_argument_group("data")
     src.add_argument("--csv", help="OHLCV csv (TradingView export works)")
+    src.add_argument("--pair-csv", metavar="PATH",
+                     help="OHLCV csv of the paired index (ES for NQ, NQ for ES), "
+                          "inner-joined to --csv on timestamp as pair_open/high/"
+                          "low/close. Needed by the SMT variant of tjr_intraday.")
     src.add_argument("--yahoo", help="ticker via yfinance")
     src.add_argument("--start", default="2005-01-01")
     src.add_argument("--synthetic", action="store_true", help="use a random walk (the null hypothesis)")
@@ -286,11 +299,18 @@ def main():
     base_summary = metrics.summary(base)
 
     # ── path-dependent models report at the trade level too ──
-    if args.strategy == "tjr":
+    # The coin-flip benchmark below holds for as long as this strategy does on
+    # average, so the comparison is about entries rather than holding period.
+    # Ten bars is the fallback for strategies with no trade list, or none taken.
+    bench_hold, hold_matched = 10, False
+    if strat.simulate is not None:
         rule()
         print("\nTRADE DETAIL (real fill prices, before costs and vol targeting)\n")
-        sim = tjr_model.simulate(df, **strat.params)
-        print(tjr_model.format_trade_stats(tjr_model.trade_stats(sim.trades)))
+        sim = strat.simulate(df, **strat.params)
+        stats = tjr_model.trade_stats(sim.trades)
+        print(tjr_model.format_trade_stats(stats))
+        if "avg_bars" in stats:
+            bench_hold, hold_matched = max(1, int(round(stats["avg_bars"]))), True
         if len(sim.trades) < 30:
             print("\n  Fewer than 30 trades. Nothing below this line means anything"
                   "\n  at that sample size, whatever the Sharpe says.")
@@ -347,9 +367,11 @@ def main():
         print("\n[3] RANDOM-ENTRY BENCHMARK — can coin flips do this too?\n")
         pos = base.position
         trade_rate = max(float((pos.diff().abs() > 1e-9).mean()), 0.001)
-        rb = validate.random_benchmark(df, base_summary["sharpe"], trade_rate, 10,
+        rb = validate.random_benchmark(df, base_summary["sharpe"], trade_rate, bench_hold,
                                        costs, n_trials=args.trials,
                                        strat=strat, **bt)
+        print(f"  coin flips hold      {bench_hold} bars"
+              + ("   ← the strategy's own average hold" if hold_matched else ""))
         print(f"  strategy Sharpe      {rb['strategy']:.2f}")
         print(f"  random mean          {rb['random_mean']:.2f} (sd {rb['random_std']:.2f})")
         print(f"  random 95th pct      {rb['random_p95']:.2f}")

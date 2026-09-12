@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from . import primitives, tjr
+from . import primitives, tjr, tjr_intraday
 from .fvg import fvg
 from .primitives import (
     Bars,
@@ -47,7 +47,7 @@ def tjr_signal(df: pd.DataFrame, **params) -> pd.Series:
 
 
 __all__ = [
-    "primitives", "tjr", "tjr_signal", "fvg",
+    "primitives", "tjr", "tjr_intraday", "tjr_signal", "fvg",
     "Bars", "Gap", "Swing", "Sweep", "atr", "confirmed_swings", "detect_bos",
     "detect_sweep", "find_fvg", "in_killzone", "is_displacement", "structure_level",
 ]
