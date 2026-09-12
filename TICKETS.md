@@ -13,8 +13,10 @@ deleting it when the commit that fixes it lands. Order matters and is stated.
 4. **T-5 Turtle / Donchian on a diversified basket** (from the traders report)
 5. **T-6 ORB Stocks-in-Play** (from the traders report)
 
-The TJR intraday work is closed after round 2 (`DESIGN-tjr-intraday.md` §11);
-whatever it returns is the verdict and there is no round three.
+**TJR intraday: closed 2026-09-12.** Two pre-specified rounds; verdict in
+`DESIGN-tjr-intraday.md` §12 (best of 192 trials deflates to 0.41; every
+5-minute run fails every edge gate; the 1-minute data runs to 30 sessions).
+No round three. The four strategies stay registered as `folklore`.
 
 ## T-5 — Turtle / Donchian on a diversified basket
 
