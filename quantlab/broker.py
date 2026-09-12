@@ -168,11 +168,28 @@ class AlpacaBroker:
     require_open: bool = True
     fill_timeout: float = 90.0
     poll_every: float = 1.0
+    # the smallest move worth sending, in dollars. The venue has its own floor
+    # underneath this — see _min_notional — and that one wins.
     min_notional: float = 1.0
     cancel_unfilled: bool = True
     # how long to keep re-querying a cancelled order before giving up on the
     # broker saying so. Past this the order is treated as still live.
     cancel_confirm_s: float = 30.0
+
+    @property
+    def _min_notional(self) -> float:
+        """The floor the venue actually enforces, not the one we would like.
+
+        Alpaca rejects any crypto order under $10 of cost basis
+        (code 40310000, "cost basis must be >= minimal amount of order 10") and
+        any equity order under $1. Found the hard way: a $5 LTC/USD test order
+        came back refused. Sending something the venue will refuse is not a
+        trade, it is an `unfilled` record and a wasted poll, so a delta under
+        the floor is skipped here as "too small to matter", the same way a
+        sub-dollar move always was.
+        """
+        venue = 10.0 if self.is_crypto else 1.0
+        return max(float(self.min_notional), venue)
 
     kind: str = field(default="alpaca", init=False)
     cash: float = field(default=0.0, init=False)
@@ -554,7 +571,8 @@ class AlpacaBroker:
                 q = self.quote()
                 mid = q["mid"] or price
                 leg = self._send_leg(wanted, cid, kind="limit",
-                                     limit_price=self._limit_price(mid, wanted, limit_bps),
+                                     limit_price=self._limit_price(mid, wanted, limit_bps,
+                                                                   bid=q.get("bid"), ask=q.get("ask")),
                                      wait_s=limit_wait_s)
                 leg["mid"] = mid
                 leg["quote_source"] = q["source"]
@@ -567,7 +585,7 @@ class AlpacaBroker:
                     break
                 sign = 1.0 if wanted > 0 else -1.0
                 left = leg["qty"] - leg["filled_qty"]
-                if left > 0 and fallback == "market" and abs(left * price) >= self.min_notional:
+                if left > 0 and fallback == "market" and abs(left * price) >= self._min_notional:
                     fell_back = True
                     legs.append(self._send_leg(sign * left, self._client_id(prefix, len(legs)),
                                                kind="market"))
@@ -744,7 +762,7 @@ class AlpacaBroker:
 
         target_units, clamped = self._target_units(eq, price, target_fraction, opg=opg)
         delta = target_units - self.units
-        if abs(delta * price) < self.min_notional:
+        if abs(delta * price) < self._min_notional:
             return None
 
         # an on-open order is sent while closed by design
@@ -843,12 +861,26 @@ class AlpacaBroker:
             return float(math.trunc(qty))
         return round(qty, 9)
 
-    def _limit_price(self, mid: float, delta_units: float, bps: float) -> float:
-        """Marketable: through the touch by `bps`, rounded away from the market so
-        the rounding cannot make it un-marketable. Crypto rounds to the asset's
-        price increment, equities to a cent (sub-penny limits are rejected)."""
+    def _limit_price(self, mid: float, delta_units: float, bps: float,
+                     bid: float | None = None, ask: float | None = None) -> float:
+        """Marketable: `bps` through the mid, but never inside the touch.
+
+        Mid plus a few bps is only marketable when the half-spread is smaller
+        than those bps. On a wide or stale crypto book it is not: a $37 LTC/USD
+        sell at mid - 5 bps sat above the bid for the whole 60 s wait and went
+        to market on the fallback, 17 bps worse. So a buy is anchored at the
+        ask and a sell at the bid whenever the quote is wider than the offset —
+        on a tight book that is exactly mid +/- bps, on a wide one it is the
+        price that actually trades. Rounded away from the market so rounding
+        cannot make it un-marketable; crypto to the asset's price increment,
+        equities to a cent (sub-penny limits are rejected).
+        """
         buy = delta_units > 0
         raw = mid * (1 + bps / 1e4) if buy else mid * (1 - bps / 1e4)
+        if buy and ask:
+            raw = max(raw, float(ask))
+        elif not buy and bid:
+            raw = min(raw, float(bid))
         inc = _f(getattr(self.asset, "price_increment", 0) or 0) if self.is_crypto else 0.0
         if inc <= 0:
             inc = 0.01
