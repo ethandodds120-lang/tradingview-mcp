@@ -144,12 +144,16 @@ REGISTRY: Dict[str, Strategy] = {
     # The session-based model on 5-minute ES/NQ (DESIGN-tjr-intraday.md). Same
     # sweep -> BOS -> FVG sequence as tjr but on his clock: six levels fixed before
     # the open, one setup a day. Goes all-flat on a frame with no 09:30 ET bar.
-    # The grid is deliberately small — every parameter raises the deflation bar
-    # (rule 7); N = 8 here, 32 across both variants and both instruments.
+    # Round 2 (§11) made the stop width a variable: `stop_mode` is `wick` (round
+    # 1's rule), an ATR multiple off the entry, or the session extreme. The grid
+    # is deliberately small — every parameter raises the deflation bar (rule 7);
+    # N = 20 here, 160 across both timeframes, both variants and both
+    # instruments, 192 cumulative once round 1's 32 are counted. stop_buffer_atr
+    # is fixed at 0.25: round 1 found 0 vs 0.25 immaterial, so it left the grid.
     "tjr_intraday": Strategy(
         "tjr_intraday", predictive.tjr_intraday.signal,
-        dict(predictive.tjr_intraday.DEFAULTS),
-        {"stop_buffer_atr": [0.0, 0.25],
+        {**predictive.tjr_intraday.DEFAULTS, "stop_mode": "wick", "entry_tf": 5},
+        {"stop_mode": list(predictive.tjr_intraday.STOP_MODES),
          "min_fvg_atr": [0.0, 0.25],
          "allow_ifvg": [True, False]},
         family="predictive",
@@ -165,8 +169,9 @@ REGISTRY: Dict[str, Strategy] = {
     # pair_high/pair_low (data.load_futures_pair, run.py --pair-csv).
     "tjr_intraday_smt": Strategy(
         "tjr_intraday_smt", predictive.tjr_intraday.signal,
-        {**predictive.tjr_intraday.DEFAULTS, "smt": True},
-        {"stop_buffer_atr": [0.0, 0.25],
+        {**predictive.tjr_intraday.DEFAULTS, "smt": True, "stop_mode": "wick",
+         "entry_tf": 5},
+        {"stop_mode": list(predictive.tjr_intraday.STOP_MODES),
          "min_fvg_atr": [0.0, 0.25],
          "allow_ifvg": [True, False]},
         family="predictive",
@@ -177,6 +182,43 @@ REGISTRY: Dict[str, Strategy] = {
         evidence="folklore",
         source="TJR / ICT trading community, session-based model. No peer-reviewed "
                "support; see RESEARCH.md.",
+        simulate=predictive.tjr_intraday.simulate,
+    ),
+    # The two-timeframe model (§11.3): the frame is 1-minute bars, and the
+    # strategy resamples its own 5-minute context for levels, swings, sweep and
+    # BOS, never reading a partial context bar. Zones, fills, stops and exits run
+    # on the minutes — his stated confirmation timeframe. Same grid, same N.
+    "tjr_intraday_1m": Strategy(
+        "tjr_intraday_1m", predictive.tjr_intraday.signal,
+        {**predictive.tjr_intraday.DEFAULTS, "stop_mode": "wick", "entry_tf": 1},
+        {"stop_mode": list(predictive.tjr_intraday.STOP_MODES),
+         "min_fvg_atr": [0.0, 0.25],
+         "allow_ifvg": [True, False]},
+        family="predictive",
+        thesis="The 09:30 sweep of an overnight or prior-day extreme is engineered "
+               "to take resting stops, and the reversal it starts runs to the "
+               "opposite pool of liquidity. 1-minute entries, 5-minute context.",
+        evidence="folklore",
+        source="TJR / ICT trading community, session-based model. No peer-reviewed "
+               "support; see RESEARCH.md. 1-minute entries, 5-minute context.",
+        simulate=predictive.tjr_intraday.simulate,
+    ),
+    "tjr_intraday_1m_smt": Strategy(
+        "tjr_intraday_1m_smt", predictive.tjr_intraday.signal,
+        {**predictive.tjr_intraday.DEFAULTS, "smt": True, "stop_mode": "wick",
+         "entry_tf": 1},
+        {"stop_mode": list(predictive.tjr_intraday.STOP_MODES),
+         "min_fvg_atr": [0.0, 0.25],
+         "allow_ifvg": [True, False]},
+        family="predictive",
+        thesis="The 09:30 sweep of an overnight or prior-day extreme is engineered "
+               "to take resting stops, and the reversal it starts runs to the "
+               "opposite pool of liquidity — and ES/NQ divergence at the sweep "
+               "marks it as a manipulation rather than a breakdown. 1-minute "
+               "entries, 5-minute context.",
+        evidence="folklore",
+        source="TJR / ICT trading community, session-based model. No peer-reviewed "
+               "support; see RESEARCH.md. 1-minute entries, 5-minute context.",
         simulate=predictive.tjr_intraday.simulate,
     ),
     "fvg": Strategy(

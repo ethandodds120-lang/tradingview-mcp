@@ -1,0 +1,119 @@
+
+══════════════════════════════════════════════════════════════════════════════
+  DATA   data/ES_1min_tv.csv + pair data/NQ_1min_tv.csv
+         41154 bars   2026-08-02 → 2026-09-11
+  COSTS  1.0 bps round trip    VOL TARGET 15%
+══════════════════════════════════════════════════════════════════════════════
+
+IN-SAMPLE (the number that lies to you)
+
+  tjr_intraday_1m_smt CAGR   0.00%  Sharpe  0.00 (gross  0.00)  MaxDD   0.00%  t  0.00  trades     0
+  buy_hold       CAGR -15.73%  Sharpe -1.21 (gross -0.10)  MaxDD  -7.65%  t -0.42  trades     1
+──────────────────────────────────────────────────────────────────────────────
+
+TRADE DETAIL (real fill prices, before costs and vol targeting)
+
+  no trades
+
+  Fewer than 30 trades. Nothing below this line means anything
+  at that sample size, whatever the Sharpe says.
+──────────────────────────────────────────────────────────────────────────────
+
+[0] CAUSALITY — recompute the signal on truncated history
+
+  clean across 6 truncations — the signal at bar t does not move when later bars are removed
+──────────────────────────────────────────────────────────────────────────────
+
+[1] WALK-FORWARD  — parameters chosen in-sample, applied out-of-sample
+
+ fold           train_end  is_sharpe  oos_sharpe p_stop_mode  p_min_fvg_atr  p_allow_ifvg
+    1 2026-08-07 20:18:00       0.00        0.00        wick           0.00          True
+    2 2026-08-14 19:38:00       0.00        0.00        wick           0.00          True
+    3 2026-08-21 18:58:00       0.00        0.00        wick           0.00          True
+    4 2026-08-28 18:17:00       0.00        0.00        wick           0.00          True
+    5 2026-09-04 17:38:00       0.00        0.00        wick           0.00          True
+
+  Combined OOS Sharpe: 0.00   (in-sample was 0.00)
+  In-sample Sharpe was not positive, so there is nothing to decay from.
+──────────────────────────────────────────────────────────────────────────────
+
+[2] PARAMETER SENSITIVITY — is it a plateau or a spike?
+
+stop_mode  min_fvg_atr  allow_ifvg  sharpe  max_dd
+     wick        0.000        True   0.000   0.000
+     wick        0.000       False   0.000   0.000
+     wick        0.250        True   0.000   0.000
+     wick        0.250       False   0.000   0.000
+   atr1.0        0.000        True   0.000   0.000
+   atr1.0        0.000       False   0.000   0.000
+   atr1.0        0.250        True   0.000   0.000
+   atr1.0        0.250       False   0.000   0.000
+
+  best 0.00 / median 0.00 / worst 0.00
+  0% of settings profitable
+──────────────────────────────────────────────────────────────────────────────
+
+[3] RANDOM-ENTRY BENCHMARK — can coin flips do this too?
+
+  coin flips hold      10 bars
+  strategy Sharpe      0.00
+  random mean          -8.44 (sd 2.87)
+  random 95th pct      -3.78
+  random best of 300   -1.83
+
+  → your strategy beats 100% of random entries
+──────────────────────────────────────────────────────────────────────────────
+
+[4] COST SWEEP — where does the edge die?
+
+ round_trip_bps  sharpe  cagr
+              0   0.000 0.000
+              1   0.000 0.000
+              2   0.000 0.000
+              5   0.000 0.000
+             10   0.000 0.000
+             20   0.000 0.000
+             50   0.000 0.000
+
+  Edge survives to roughly 0 bps round trip
+──────────────────────────────────────────────────────────────────────────────
+
+[5] SEARCH COST — how much of the best result was luck?
+
+  grid searched            20 parameter combinations
+  best Sharpe found        0.00
+  expected best from noise 0.00   ← what 20 tries would give on data with no edge
+  deflated Sharpe          nan   ← P(the edge is real, given the search)
+  overfitting probability  nan%   ← how often the in-sample winner lands below the
+                                    out-of-sample median, over 0 splits
+                                    (noisy: sd ~19% on a single run — read it loosely)
+──────────────────────────────────────────────────────────────────────────────
+
+[6] DRAWDOWN DISTRIBUTION — can the sizing survive its own bad luck?
+
+  realized max drawdown       0.0%   ← the one number a backtest gives you
+  median of 2000 paths        0.0%
+  95th percentile             0.0%   ← plan for this one
+  99th percentile             0.0%
+
+  the realized drawdown was luckier than 0% of resampled paths
+  longest time under water 0 bars (0.0 years) at the 95th percentile
+
+  P(breaching -50%) = 0.0% of paths
+══════════════════════════════════════════════════════════════════════════════
+
+VERDICT
+
+  FAIL  walk-forward OOS Sharpe 0.00 (want > 0.3)
+  FAIL  0% of folds positive (want >= 60%)
+  FAIL  0% of parameter settings positive (want >= 60%)
+  PASS  beats 100% of random entries (want >= 95%)
+  FAIL  survives to 0bps cost vs 1bps live (want 3x headroom)
+  FAIL  t-stat 0.00 (want >= 3.0, Harvey-Liu-Zhu bar)
+  PASS  0% of resampled paths breach -50% (want <= 5%)
+
+══════════════════════════════════════════════════════════════════════════════
+
+  Passing every gate is necessary, not sufficient. It means the strategy
+  is not obviously fake. Paper trade it for months before risking money.
+

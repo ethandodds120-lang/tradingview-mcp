@@ -28,9 +28,34 @@ ZONE    a bullish FVG on the displacement leg, or an earlier bearish FVG of the
         day that a bar since the sweep closed above (inverted). Its top must sit
         at or below the midpoint of [sweep low, BOS level]: discount only.
 FILL    a bar stamped 09:50-10:05, after both the BOS bar and the zone's bar,
-        trades into the zone. Stop under the sweep wick, target at the nearest of
-        the three highs above entry. Nothing above: no trade.
+        trades into the zone. Stop per `stop_mode` (below), target at the nearest
+        of the three highs above entry. Nothing above: no trade.
 EXIT    stop, target, or the 15:55 close. One setup per day, first one wins.
+
+Two timeframes (round 2, DESIGN §11.3)
+--------------------------------------
+`entry_tf=5` is the model above on the frame it is given. `entry_tf=1` takes a
+1-minute frame and splits the model in two: levels, swings, sweep and BOS are
+read on 5-minute CONTEXT bars the module builds itself (the 1-minute OHLC
+resampled to 5-minute bins labelled by open time), while the zone, the fill,
+the stop, the target and the exit run on the 1-minute bars. A context bar is
+consulted only on the 1-minute bar that completes it — the one stamped :04,
+:09, :14 ... by the clock, not by peeking at the next row — so a truncation in
+the middle of a bin never shows the model a partial bar. Sweep and BOS are
+therefore dated by the completing minute; the sweep extreme is the context
+bar's wick, and the minute that printed it starts the displacement leg. A bin
+whose :04 minute is missing from the data never completes and is skipped. On a
+frame that is not 1-minute, `entry_tf=1` finds no completing bar and stays flat.
+
+Stop width (round 2, DESIGN §11.4)
+----------------------------------
+`stop_mode`, applied at the fill: `wick` (round 1, under the sweep wick by a
+buffer), `atr1.0` / `atr1.5` / `atr2.0` (entry minus that many ATR), `session`
+(under the lowest low of the trading day so far, by the same buffer). ATR here
+is always ATR(14) of the context — the frame itself on `entry_tf=5`, the
+5-minute bins on `entry_tf=1`, read at the newest completed context bar — so the
+multiples mean the same thing on both timeframes. The `min_fvg_atr` floor is
+the one thing measured on the bars the gap forms on, as `find_fvg` documents.
 
 Built from primitives
 ---------------------
@@ -43,11 +68,13 @@ so `sweep_of_levels` lives in this module.
 Lookahead
 ---------
 Same guard as tjr: a pivot is admitted only once bar i has reached its
-`confirmed_at` tag. The levels come from one groupby over the whole frame, which
-is safe for the reason written at `session_levels`: every window that feeds a
-day's levels has closed before that day's sweep window opens, so no bar that
-reads a level can see a bar that moved it. The position series keeps tjr's
-eod rule for the same reason tjr does — see the comment at the exit block.
+`confirmed_at` tag — on the context, so on `entry_tf=1` it is admitted at the
+1-minute bar completing that tag. The levels come from one groupby over the
+whole frame, which is safe for the reason written at `session_levels`: every
+window that feeds a day's levels has closed before that day's sweep window
+opens, so no bar that reads a level can see a bar that moved it. The position
+series keeps tjr's eod rule for the same reason tjr does — see the comment at
+the exit block.
 """
 
 from __future__ import annotations
@@ -75,13 +102,21 @@ ENTRY_WINDOW = (9 * 60 + 50, 10 * 60 + 10)    # 09:50 09:55 10:00 10:05
 LOWS = ("ASIA_L", "LON_L", "PDL")
 HIGHS = ("ASIA_H", "LON_H", "PDH")
 
-_TRADE_COLS = _TJR_COLS + ["sweep_level", "target_level", "zone_kind", "smt", "session_day"]
+#: The stop rules of DESIGN §11.4, and the ATR multiple of the ones that have one.
+STOP_MODES = ("wick", "atr1.0", "atr1.5", "atr2.0", "session")
+_ATR_MULT = {"atr1.0": 1.0, "atr1.5": 1.5, "atr2.0": 2.0}
+ENTRY_TFS = (5, 1)
+CONTEXT_MINUTES = 5
+
+_TRADE_COLS = _TJR_COLS + ["sweep_level", "target_level", "zone_kind", "smt", "session_day",
+                           "stop_mode", "entry_tf"]
 _DAY_COLS = ["session_day", "side", "sweep_time", "sweep_level", "bos_time",
              "zone_kind", "fill_time", "outcome"]
 
 #: The defaults of `simulate`, in one place so day_log and the registry agree with it.
 DEFAULTS = {"swing_left": 2, "swing_right": 2, "atr_len": 14, "stop_buffer_atr": 0.25,
-            "min_fvg_atr": 0.0, "allow_ifvg": True, "smt": False, "flat_at": "15:55"}
+            "min_fvg_atr": 0.0, "allow_ifvg": True, "smt": False, "flat_at": "15:55",
+            "stop_mode": "wick", "entry_tf": 5}
 
 
 # ────────────────────────────── the clock ──────────────────────────────
@@ -132,6 +167,67 @@ def session_clock(index: pd.Index, flat_at: str = "15:55") -> Clock | None:
     )
 
 
+# ────────────────────────────── the context ──────────────────────────────
+
+@dataclass
+class Context:
+    """The bars the structure is read on, and how each input bar maps to them.
+
+    On `entry_tf=5` the context IS the input: `bars` is the same view, every bar
+    completes itself. On `entry_tf=1` it is the 5-minute resample, and the per-
+    input-bar arrays say which bin a minute sits in and whether it is the minute
+    that closes the bin. Nothing reads a context bar through `idx` alone: the
+    sweep and BOS tests fire only where `done`, and the ATR is read at `last`.
+    """
+    bars: Bars
+    idx: np.ndarray          # per input bar: the context bar containing it
+    done: np.ndarray         # per input bar: this bar completes its context bar
+    last: np.ndarray         # per input bar: the newest complete context bar, -1 before the first
+    first: np.ndarray        # per context bar: the first input bar inside it
+    pair_high: np.ndarray | None = None      # per context bar, when the pair is joined in
+    pair_low: np.ndarray | None = None
+
+
+def build_context(df: pd.DataFrame, entry_tf: int, atr_len: int, bars: Bars | None = None) -> Context:
+    """The context view for `entry_tf`. `bars` is the input view, reused as-is on 5.
+
+    The 1-minute path resamples the tz-naive UTC index into 5-minute bins
+    labelled by open time (ET and UTC share the 5-minute grid: the offset is a
+    whole number of hours). A bin is complete at the input bar whose stamp
+    minute is 4 mod 5 — the clock says the bin has nothing left to print — and
+    never by looking at the row after it, which is what keeps a mid-bin
+    truncation causal. Empty bins (the maintenance hour, weekends) are dropped
+    so the context has no phantom bars for the swings to count.
+    """
+    n = len(df)
+    has_pair = {"pair_high", "pair_low"} <= set(df.columns)
+    if entry_tf == CONTEXT_MINUTES:
+        bars = bars if bars is not None else Bars.from_frame(df, atr_len)
+        every = np.arange(n)
+        return Context(
+            bars=bars, idx=every, done=np.ones(n, dtype=bool), last=every, first=every,
+            pair_high=df["pair_high"].to_numpy(dtype=float) if has_pair else None,
+            pair_low=df["pair_low"].to_numpy(dtype=float) if has_pair else None,
+        )
+    agg = {"open": "first", "high": "max", "low": "min", "close": "last"}
+    if has_pair:
+        agg.update(pair_high="max", pair_low="min")
+    rule = f"{CONTEXT_MINUTES}min"
+    ctx = (df[list(agg)].resample(rule, label="left", closed="left").agg(agg)
+           .dropna(subset=["close"]))
+    idx = ctx.index.get_indexer(df.index.floor(rule))
+    done = (df.index.minute.to_numpy() % CONTEXT_MINUTES) == CONTEXT_MINUTES - 1
+    # idx never decreases, so the running maximum of the completed bins is the
+    # newest one each input bar may read.
+    last = np.maximum.accumulate(np.where(done, idx, -1))
+    first = np.flatnonzero(np.r_[True, idx[1:] != idx[:-1]])
+    return Context(
+        bars=Bars.from_frame(ctx, atr_len), idx=idx, done=done, last=last, first=first,
+        pair_high=ctx["pair_high"].to_numpy(dtype=float) if has_pair else None,
+        pair_low=ctx["pair_low"].to_numpy(dtype=float) if has_pair else None,
+    )
+
+
 # ────────────────────────────── the levels ──────────────────────────────
 
 def session_levels(clock: Clock, high: np.ndarray, low: np.ndarray) -> dict[str, np.ndarray]:
@@ -147,6 +243,10 @@ def session_levels(clock: Clock, high: np.ndarray, low: np.ndarray) -> dict[str,
     levels is already complete, so the numbers it reads do not change. Truncate
     earlier and D has no sweep-window bar and never reads them. That is exactly
     what validate.causality_check probes.
+
+    On the 1-minute frame the levels are read off the minutes, which gives the
+    same six numbers the 5-minute bins would: a window's high is the high of its
+    minutes whichever way they are grouped.
     """
     f = pd.DataFrame({"day": clock.day, "high": high, "low": low})
     lv = pd.DataFrame(index=pd.Index(np.unique(clock.day), name="day"))
@@ -191,6 +291,27 @@ def sweep_of_levels(high: np.ndarray, low: np.ndarray, close: np.ndarray, i: int
     return None
 
 
+# ────────────────────────────── the stop ──────────────────────────────
+
+def stop_price(stop_mode: str, side: int, entry: float, extreme: float,
+               session_extreme: float, atr_value: float, stop_buffer_atr: float) -> float:
+    """The stop for a fill at `entry`, per the §11.4 table. Long side shown; shorts mirror.
+
+    wick      sweep extreme - buffer x ATR          round 1's rule, the expression untouched
+    atrX      entry - X x ATR
+    session   day's lowest low so far - buffer x ATR
+    `session_extreme` is the day's extreme over the bars BEFORE the fill bar: the
+    stop is placed intrabar, when that bar's own low has not printed. Including
+    it would guarantee the fill bar can never stop the trade out, which is the
+    kind of optimism the same-bar stop rule exists to refuse.
+    """
+    if stop_mode == "wick":
+        return extreme - side * stop_buffer_atr * atr_value
+    if stop_mode == "session":
+        return session_extreme - side * stop_buffer_atr * atr_value
+    return entry - side * _ATR_MULT[stop_mode] * atr_value
+
+
 # ────────────────────────────── the state machine ──────────────────────────────
 
 @dataclass(frozen=True)
@@ -222,8 +343,19 @@ def _freshest(zones: list[Zone]) -> Zone | None:
 
 def _run(df: pd.DataFrame, swing_left: int, swing_right: int, atr_len: int,
          stop_buffer_atr: float, min_fvg_atr: float, allow_ifvg: bool, smt: bool,
-         flat_at: str) -> tuple[list, np.ndarray, list]:
-    """Bar by bar. Returns (trades, position array, per-day log rows)."""
+         flat_at: str, stop_mode: str, entry_tf: int) -> tuple[list, np.ndarray, list]:
+    """Bar by bar over the input. Returns (trades, position array, per-day log rows).
+
+    Two index spaces meet here. `i`, `k`, `j` and everything stored on the trade
+    are INPUT bars; `ci` is the context bar containing bar i, read only on bars
+    where `ctx.done[i]`. On `entry_tf=5` the two are the same array and the same
+    numbers, which is what keeps round 1 reproducible bar for bar.
+    """
+    if stop_mode not in STOP_MODES:
+        raise ValueError(f"tjr_intraday: stop_mode must be one of {STOP_MODES}, got {stop_mode!r}")
+    if int(entry_tf) not in ENTRY_TFS:
+        raise ValueError(f"tjr_intraday: entry_tf must be one of {ENTRY_TFS}, got {entry_tf!r}")
+    entry_tf = int(entry_tf)
     swing_right = max(1, int(swing_right))
     swing_left = max(1, int(swing_left))
     n = len(df)
@@ -239,23 +371,25 @@ def _run(df: pd.DataFrame, swing_left: int, swing_right: int, atr_len: int,
                          "load the frame with data.load_futures_pair (run.py --pair-csv)")
 
     bars = Bars.from_frame(df, atr_len)
-    o, h, l, c, atr_ = bars.open, bars.high, bars.low, bars.close, bars.atr
+    o, h, l, c = bars.open, bars.high, bars.low, bars.close
     idx = bars.index
     minutes, day = clock.minutes, clock.day
     levels = session_levels(clock, h, l)
+    ctx = build_context(df, entry_tf, atr_len, bars)
+    cb = ctx.bars
     if smt:
-        pair_h = df["pair_high"].to_numpy(dtype=float)
-        pair_l = df["pair_low"].to_numpy(dtype=float)
-        pair_levels = session_levels(clock, pair_h, pair_l)
+        pair_levels = session_levels(clock, df["pair_high"].to_numpy(dtype=float),
+                                     df["pair_low"].to_numpy(dtype=float))
 
-    # Every pivot in the frame, tagged with the bar it became knowable on. The
-    # cursors below admit one only once bar i has reached that tag.
-    all_highs, all_lows = confirmed_swings(bars, swing_left, swing_right)
+    # Every pivot of the context, tagged with the context bar it became knowable
+    # on. The cursors below admit one only once the newest complete context bar
+    # has reached that tag.
+    all_highs, all_lows = confirmed_swings(cb, swing_left, swing_right)
     hi_cur = lo_cur = 0
     swing_highs: list = []
     swing_lows: list = []
 
-    setup = None        # {side, sweep_idx, extreme, level, bos_level, stage, bos_idx, eq, zone, pending}
+    setup = None        # {side, sweep_idx, sweep_first, extreme, extreme_1m, level, bos_level, stage, bos_idx, eq, zone, pending}
     trade = None        # {side, entry_idx, entry, stop, target, risk, names..., day}
     cur_day = None
     day_start = 0
@@ -280,6 +414,8 @@ def _run(df: pd.DataFrame, swing_left: int, swing_right: int, atr_len: int,
             "zone_kind": trade["zone_kind"],
             "smt": bool(smt),
             "session_day": pd.Timestamp(trade["day"]),
+            "stop_mode": stop_mode,
+            "entry_tf": entry_tf,
         })
         trade = None
 
@@ -291,10 +427,11 @@ def _run(df: pd.DataFrame, swing_left: int, swing_right: int, atr_len: int,
             cur_day, day_start, setup, day_done, row = day[i], i, None, False, None
 
         # -- 1. admit the pivots whose right-hand window just closed ---------------
-        while hi_cur < len(all_highs) and all_highs[hi_cur].confirmed_at <= i:
+        newest = ctx.last[i]
+        while hi_cur < len(all_highs) and all_highs[hi_cur].confirmed_at <= newest:
             swing_highs.append(all_highs[hi_cur])
             hi_cur += 1
-        while lo_cur < len(all_lows) and all_lows[lo_cur].confirmed_at <= i:
+        while lo_cur < len(all_lows) and all_lows[lo_cur].confirmed_at <= newest:
             swing_lows.append(all_lows[lo_cur])
             lo_cur += 1
 
@@ -340,9 +477,12 @@ def _run(df: pd.DataFrame, swing_left: int, swing_right: int, atr_len: int,
                 row = {"session_day": pd.Timestamp(day[i]), "side": 0, "sweep_time": pd.NaT,
                        "sweep_level": None, "bos_time": pd.NaT, "zone_kind": None,
                        "fill_time": pd.NaT, "outcome": "no_sweep"}
+            if not ctx.done[i]:
+                continue        # the context bar is still printing
+            ci = ctx.idx[i]
             lows = {k: levels[k][i] for k in LOWS}
             highs = {k: levels[k][i] for k in HIGHS}
-            swept = sweep_of_levels(h, l, c, i, lows, highs)
+            swept = sweep_of_levels(cb.high, cb.low, cb.close, ci, lows, highs)
             if swept is None:
                 continue
             side, name, level = swept
@@ -354,7 +494,7 @@ def _run(df: pd.DataFrame, swing_left: int, swing_right: int, atr_len: int,
                 # The pair must have held its matching level. A NaN pair level cannot
                 # be held, and it cannot happen anyway: the frames are inner-joined,
                 # so the pair has bars wherever the traded index has a level.
-                held = (pair_l[i] >= pair_levels[name][i]) if side > 0 else (pair_h[i] <= pair_levels[name][i])
+                held = (ctx.pair_low[ci] >= pair_levels[name][i]) if side > 0 else (ctx.pair_high[ci] <= pair_levels[name][i])
                 if not held:
                     row["outcome"] = "smt"
                     continue
@@ -364,10 +504,17 @@ def _run(df: pd.DataFrame, swing_left: int, swing_right: int, atr_len: int,
             if not opposing:
                 row["outcome"] = "no_swing"
                 continue
-            extreme = l[i] if side > 0 else h[i]
-            setup = {"side": side, "sweep_idx": i, "extreme": extreme, "level": name,
-                     "bos_level": opposing[-1].price, "stage": "bos", "bos_idx": None,
-                     "eq": None, "zone": None, "pending": []}
+            # The extreme is the context bar's wick; the input bar that printed
+            # it (the earliest, on a tie) is where the displacement leg starts.
+            # Both are bar i itself on entry_tf=5.
+            first = ctx.first[ci]
+            if side > 0:
+                extreme, extreme_1m = cb.low[ci], first + int(np.argmin(l[first:i + 1]))
+            else:
+                extreme, extreme_1m = cb.high[ci], first + int(np.argmax(h[first:i + 1]))
+            setup = {"side": side, "sweep_idx": i, "sweep_first": first, "extreme": extreme,
+                     "extreme_1m": extreme_1m, "level": name, "bos_level": opposing[-1].price,
+                     "stage": "bos", "bos_idx": None, "eq": None, "zone": None, "pending": []}
             row["outcome"] = "no_bos"
             continue        # the break has to come on a later bar
 
@@ -378,7 +525,7 @@ def _run(df: pd.DataFrame, swing_left: int, swing_right: int, atr_len: int,
             continue
 
         if setup["stage"] == "bos":
-            if not detect_bos(bars, i, setup["bos_level"], side):
+            if not ctx.done[i] or not detect_bos(cb, ctx.idx[i], setup["bos_level"], side):
                 continue
             setup["stage"], setup["bos_idx"] = "entry", i
             row["bos_time"], row["outcome"] = idx[i], "no_zone"
@@ -387,21 +534,23 @@ def _run(df: pd.DataFrame, swing_left: int, swing_right: int, atr_len: int,
             setup["eq"] = eq
             zones: list[Zone] = []
             # The displacement leg may already have left a gap behind it. Freshest
-            # first, and the first one on the right side of EQ is the one.
-            for k in range(i, setup["sweep_idx"] + 1, -1):
+            # first, and the first one on the right side of EQ is the one. The leg
+            # runs from the bar that printed the extreme to this one, on input bars.
+            for k in range(i, setup["extreme_1m"] + 1, -1):
                 z = find_fvg(bars, k, side, min_fvg_atr)
                 if z and _discount(z, side, eq):
                     zones.append(Zone(z.low, z.high, k, "fvg", k))
                     break
             if allow_ifvg:
                 # Opposing gaps from anywhere in the day up to here. One that a bar
-                # since the sweep has closed through is inverted from that bar on;
-                # the rest stay pending and may invert during the entry window.
+                # since the sweep (its first minute, on entry_tf=1) has closed
+                # through is inverted from that bar on; the rest stay pending and
+                # may invert during the entry window.
                 for k in range(day_start, i + 1):
                     g = find_fvg(bars, k, -side, min_fvg_atr)
                     if g is None:
                         continue
-                    j = next((j for j in range(max(setup["sweep_idx"], k + 1), i + 1)
+                    j = next((j for j in range(max(setup["sweep_first"], k + 1), i + 1)
                               if _inverted(g, side, c[j])), None)
                     if j is None:
                         setup["pending"].append(g)
@@ -455,11 +604,18 @@ def _run(df: pd.DataFrame, swing_left: int, swing_right: int, atr_len: int,
         # Touched. Whatever happens next, the day's setup is spent.
         live, setup = setup, None
         row["fill_time"] = idx[i]
-        # Stop under the sweep wick, not under the lowest low since: the wick is
-        # the level his model says was defended.
-        stop = live["extreme"] - side * stop_buffer_atr * atr_[i]
+        # The stop per stop_mode. `wick` sits under the sweep wick, not under the
+        # lowest low since: the wick is the level his model says was defended.
+        # ATR is the context's, at the newest context bar that has completed —
+        # bar i itself on entry_tf=5, never the partial bin on entry_tf=1. The
+        # session extreme is over the day's bars before this one (see stop_price).
+        newest = ctx.last[i]
+        atr_value = cb.atr[newest] if newest >= 0 else math.nan
+        session_extreme = l[day_start:i].min() if side > 0 else h[day_start:i].max()
+        stop = stop_price(stop_mode, side, entry, live["extreme"], session_extreme,
+                          atr_value, stop_buffer_atr)
         risk = side * (entry - stop)
-        if risk <= 0:
+        if not risk > 0:
             row["outcome"] = "no_risk"
             continue
         # His target is the next pool, not an R multiple: the nearest of the three
@@ -496,11 +652,18 @@ def simulate(df: pd.DataFrame,
              min_fvg_atr: float = 0.0,
              allow_ifvg: bool = True,
              smt: bool = False,
-             flat_at: str = "15:55") -> SimResult:
-    """Run the state machine. One setup and one position per trading day."""
+             flat_at: str = "15:55",
+             stop_mode: str = "wick",
+             entry_tf: int = 5) -> SimResult:
+    """Run the state machine. One setup and one position per trading day.
+
+    `stop_mode` is one of STOP_MODES; `entry_tf` is 5 (the frame is the model's
+    bars) or 1 (a 1-minute frame, structure read on 5-minute context bars).
+    """
     params = {"swing_left": swing_left, "swing_right": swing_right, "atr_len": atr_len,
               "stop_buffer_atr": stop_buffer_atr, "min_fvg_atr": min_fvg_atr,
-              "allow_ifvg": allow_ifvg, "smt": smt, "flat_at": flat_at}
+              "allow_ifvg": allow_ifvg, "smt": smt, "flat_at": flat_at,
+              "stop_mode": stop_mode, "entry_tf": entry_tf}
     trades, pos, _ = _run(df, **params)
     return SimResult(
         trades=pd.DataFrame(trades, columns=_TRADE_COLS),
@@ -520,6 +683,8 @@ def day_log(df: pd.DataFrame, **params) -> pd.DataFrame:
     `outcome` is the stage the day died at: no_sweep, smt, no_swing, no_bos,
     no_zone, no_fill, no_risk, no_target, or traded. This is the setups-vs-fills
     view a trade list cannot give, and the one to read before the trade stats.
+    On `entry_tf=1`, `sweep_time` and `bos_time` are the 1-minute bars that
+    completed the context bars they happened on.
     """
     _, _, days = _run(df, **{**DEFAULTS, **params})
     return pd.DataFrame(days, columns=_DAY_COLS)

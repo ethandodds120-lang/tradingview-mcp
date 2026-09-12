@@ -1,0 +1,229 @@
+  5-minute: data/ES_5min_tv.csv  +  data/NQ_5min_tv.csv
+  1-minute: data/ES_1min_tv.csv  +  data/NQ_1min_tv.csv
+  5m data/NQ_5min_tv.csv       41067 bars  2026-02-15 → 2026-09-11  149 sessions
+  5m data/ES_5min_tv.csv       41067 bars  2026-02-15 → 2026-09-11  149 sessions
+  1m data/NQ_1min_tv.csv       41154 bars  2026-08-02 → 2026-09-11   30 sessions   <- under 100: not evidence either way
+  1m data/ES_1min_tv.csv       41154 bars  2026-08-02 → 2026-09-11   30 sessions   <- under 100: not evidence either way
+
+  round 1  NQ base 5m   N= 8  best +0.00  median -0.50  worst -2.29
+  round 1  NQ smt 5m    N= 8  best +0.00  median -0.67  worst -2.31
+  round 1  ES base 5m   N= 8  best +0.00  median -0.76  worst -1.51
+  round 1  ES smt 5m    N= 8  best +0.00  median -0.76  worst -1.51
+  round 2  NQ base 5m   N=20  best +0.00  median -0.50  worst -2.61
+  round 2  NQ smt 5m    N=20  best +0.00  median -0.93  worst -3.25
+  round 2  ES base 5m   N=20  best +0.51  median +0.00  worst -1.69
+  round 2  ES smt 5m    N=20  best +0.51  median +0.00  worst -1.69
+  round 2  NQ base 1m   N=20  best +3.68  median -3.00  worst -4.23
+  round 2  NQ smt 1m    N=20  best +3.09  median -3.00  worst -3.00
+  round 2  ES base 1m   N=20  best +0.00  median +0.00  worst -3.70
+  round 2  ES smt 1m    N=20  best +0.00  median +0.00  worst +0.00
+
+  everything tried: 192 trials across 12 runs  (= the contract's 192)
+  trials that never trade: 91 of 192   (a Sharpe of exactly 0 is one of these)
+  best of all: round 2  NQ base 1m  sharpe +3.68  stop_mode=atr1.0  min_fvg_atr=0.0  allow_ifvg=True
+    that trial: 3 trades, 3 wins, +7.50R total
+
+  DEFLATED SHARPE of the best trial
+    against its own grid  (N= 20):  expected max from noise +5.67   DSR 0.239
+    against everything    (N=192):  expected max from noise +4.29   DSR 0.414   <- the honest one
+    gate: DSR >= 0.95  ->  FAIL
+
+  PBO, pooled per timeline (the two timelines cannot share a matrix)
+    5m: 56% across 112 trials over 68 splits  (gate <= 60%: PASS)
+    1m: 67% across 80 trials over 60 splits  (gate <= 60%: FAIL)
+    read loosely — sd ~0.19 on pure noise (rule 8)
+
+  every trial, sorted:
+    round        run stop_mode  stop_buffer_atr  min_fvg_atr  allow_ifvg  trades  sharpe  max_dd
+        2 NQ base 1m    atr1.0            0.250        0.000        True    True   3.682  -0.003
+        2 NQ base 1m    atr1.5            0.250        0.000        True    True   3.682  -0.003
+        2 NQ base 1m    atr2.0            0.250        0.000        True    True   3.682  -0.003
+        2 NQ base 1m   session            0.250        0.000        True    True   3.682  -0.003
+        2 NQ base 1m      wick            0.250        0.000        True    True   3.087  -0.001
+        2  NQ smt 1m      wick            0.250        0.000        True    True   3.087  -0.001
+        2  NQ smt 1m    atr1.0            0.250        0.000        True    True   3.087  -0.001
+        2  NQ smt 1m    atr1.5            0.250        0.000        True    True   3.087  -0.001
+        2  NQ smt 1m    atr2.0            0.250        0.000        True    True   3.087  -0.001
+        2  NQ smt 1m   session            0.250        0.000        True    True   3.087  -0.001
+        2 NQ base 1m    atr1.0            0.250        0.250        True    True   1.732  -0.003
+        2 NQ base 1m    atr1.5            0.250        0.250        True    True   1.540  -0.004
+        2 ES base 5m   session            0.250        0.000        True    True   0.514  -0.002
+        2 ES base 5m   session            0.250        0.250        True    True   0.514  -0.002
+        2  ES smt 5m   session            0.250        0.000        True    True   0.514  -0.002
+        2  ES smt 5m   session            0.250        0.250        True    True   0.514  -0.002
+        2 NQ base 1m    atr2.0            0.250        0.250        True    True   0.426  -0.006
+        1 ES base 5m      wick            0.000        0.000       False   False   0.000   0.000
+        1 ES base 5m      wick            0.000        0.250       False   False   0.000   0.000
+        1 ES base 5m      wick            0.250        0.000       False   False   0.000   0.000
+        1 ES base 5m      wick            0.250        0.250       False   False   0.000   0.000
+        1  ES smt 5m      wick            0.000        0.000       False   False   0.000   0.000
+        1  ES smt 5m      wick            0.000        0.250       False   False   0.000   0.000
+        1  ES smt 5m      wick            0.250        0.000       False   False   0.000   0.000
+        1  ES smt 5m      wick            0.250        0.250       False   False   0.000   0.000
+        1 NQ base 5m      wick            0.000        0.000       False   False   0.000   0.000
+        1 NQ base 5m      wick            0.000        0.250       False   False   0.000   0.000
+        1 NQ base 5m      wick            0.250        0.000       False   False   0.000   0.000
+        1 NQ base 5m      wick            0.250        0.250       False   False   0.000   0.000
+        1  NQ smt 5m      wick            0.000        0.000       False   False   0.000   0.000
+        1  NQ smt 5m      wick            0.000        0.250       False   False   0.000   0.000
+        1  NQ smt 5m      wick            0.250        0.000       False   False   0.000   0.000
+        1  NQ smt 5m      wick            0.250        0.250       False   False   0.000   0.000
+        2 ES base 1m      wick            0.250        0.000       False   False   0.000   0.000
+        2 ES base 1m      wick            0.250        0.250        True   False   0.000   0.000
+        2 ES base 1m      wick            0.250        0.250       False   False   0.000   0.000
+        2 ES base 1m    atr1.0            0.250        0.000       False   False   0.000   0.000
+        2 ES base 1m    atr1.0            0.250        0.250        True   False   0.000   0.000
+        2 ES base 1m    atr1.0            0.250        0.250       False   False   0.000   0.000
+        2 ES base 1m    atr1.5            0.250        0.000       False   False   0.000   0.000
+        2 ES base 1m    atr1.5            0.250        0.250        True   False   0.000   0.000
+        2 ES base 1m    atr1.5            0.250        0.250       False   False   0.000   0.000
+        2 ES base 1m    atr2.0            0.250        0.000       False   False   0.000   0.000
+        2 ES base 1m    atr2.0            0.250        0.250        True   False   0.000   0.000
+        2 ES base 1m    atr2.0            0.250        0.250       False   False   0.000   0.000
+        2 ES base 1m   session            0.250        0.000       False   False   0.000   0.000
+        2 ES base 1m   session            0.250        0.250        True   False   0.000   0.000
+        2 ES base 1m   session            0.250        0.250       False   False   0.000   0.000
+        2 ES base 5m      wick            0.250        0.000       False   False   0.000   0.000
+        2 ES base 5m      wick            0.250        0.250       False   False   0.000   0.000
+        2 ES base 5m    atr1.0            0.250        0.000       False   False   0.000   0.000
+        2 ES base 5m    atr1.0            0.250        0.250       False   False   0.000   0.000
+        2 ES base 5m    atr1.5            0.250        0.000       False   False   0.000   0.000
+        2 ES base 5m    atr1.5            0.250        0.250       False   False   0.000   0.000
+        2 ES base 5m    atr2.0            0.250        0.000       False   False   0.000   0.000
+        2 ES base 5m    atr2.0            0.250        0.250       False   False   0.000   0.000
+        2 ES base 5m   session            0.250        0.000       False   False   0.000   0.000
+        2 ES base 5m   session            0.250        0.250       False   False   0.000   0.000
+        2  ES smt 1m      wick            0.250        0.000        True   False   0.000   0.000
+        2  ES smt 1m      wick            0.250        0.000       False   False   0.000   0.000
+        2  ES smt 1m      wick            0.250        0.250        True   False   0.000   0.000
+        2  ES smt 1m      wick            0.250        0.250       False   False   0.000   0.000
+        2  ES smt 1m    atr1.0            0.250        0.000        True   False   0.000   0.000
+        2  ES smt 1m    atr1.0            0.250        0.000       False   False   0.000   0.000
+        2  ES smt 1m    atr1.0            0.250        0.250        True   False   0.000   0.000
+        2  ES smt 1m    atr1.0            0.250        0.250       False   False   0.000   0.000
+        2  ES smt 1m    atr1.5            0.250        0.000        True   False   0.000   0.000
+        2  ES smt 1m    atr1.5            0.250        0.000       False   False   0.000   0.000
+        2  ES smt 1m    atr1.5            0.250        0.250        True   False   0.000   0.000
+        2  ES smt 1m    atr1.5            0.250        0.250       False   False   0.000   0.000
+        2  ES smt 1m    atr2.0            0.250        0.000        True   False   0.000   0.000
+        2  ES smt 1m    atr2.0            0.250        0.000       False   False   0.000   0.000
+        2  ES smt 1m    atr2.0            0.250        0.250        True   False   0.000   0.000
+        2  ES smt 1m    atr2.0            0.250        0.250       False   False   0.000   0.000
+        2  ES smt 1m   session            0.250        0.000        True   False   0.000   0.000
+        2  ES smt 1m   session            0.250        0.000       False   False   0.000   0.000
+        2  ES smt 1m   session            0.250        0.250        True   False   0.000   0.000
+        2  ES smt 1m   session            0.250        0.250       False   False   0.000   0.000
+        2  ES smt 5m      wick            0.250        0.000       False   False   0.000   0.000
+        2  ES smt 5m      wick            0.250        0.250       False   False   0.000   0.000
+        2  ES smt 5m    atr1.0            0.250        0.000       False   False   0.000   0.000
+        2  ES smt 5m    atr1.0            0.250        0.250       False   False   0.000   0.000
+        2  ES smt 5m    atr1.5            0.250        0.000       False   False   0.000   0.000
+        2  ES smt 5m    atr1.5            0.250        0.250       False   False   0.000   0.000
+        2  ES smt 5m    atr2.0            0.250        0.000       False   False   0.000   0.000
+        2  ES smt 5m    atr2.0            0.250        0.250       False   False   0.000   0.000
+        2  ES smt 5m   session            0.250        0.000       False   False   0.000   0.000
+        2  ES smt 5m   session            0.250        0.250       False   False   0.000   0.000
+        2 NQ base 5m      wick            0.250        0.000       False   False   0.000   0.000
+        2 NQ base 5m      wick            0.250        0.250       False   False   0.000   0.000
+        2 NQ base 5m    atr1.0            0.250        0.000       False   False   0.000   0.000
+        2 NQ base 5m    atr1.0            0.250        0.250       False   False   0.000   0.000
+        2 NQ base 5m    atr1.5            0.250        0.000       False   False   0.000   0.000
+        2 NQ base 5m    atr1.5            0.250        0.250       False   False   0.000   0.000
+        2 NQ base 5m    atr2.0            0.250        0.000       False   False   0.000   0.000
+        2 NQ base 5m    atr2.0            0.250        0.250       False   False   0.000   0.000
+        2 NQ base 5m   session            0.250        0.000       False   False   0.000   0.000
+        2 NQ base 5m   session            0.250        0.250       False   False   0.000   0.000
+        2  NQ smt 5m      wick            0.250        0.000       False   False   0.000   0.000
+        2  NQ smt 5m      wick            0.250        0.250       False   False   0.000   0.000
+        2  NQ smt 5m    atr1.0            0.250        0.000       False   False   0.000   0.000
+        2  NQ smt 5m    atr1.0            0.250        0.250       False   False   0.000   0.000
+        2  NQ smt 5m    atr1.5            0.250        0.000       False   False   0.000   0.000
+        2  NQ smt 5m    atr1.5            0.250        0.250       False   False   0.000   0.000
+        2  NQ smt 5m    atr2.0            0.250        0.000       False   False   0.000   0.000
+        2  NQ smt 5m    atr2.0            0.250        0.250       False   False   0.000   0.000
+        2  NQ smt 5m   session            0.250        0.000       False   False   0.000   0.000
+        2  NQ smt 5m   session            0.250        0.250       False   False   0.000   0.000
+        2 NQ base 1m   session            0.250        0.250        True    True  -0.224  -0.007
+        2 NQ base 5m    atr1.0            0.250        0.250        True    True  -0.990  -0.010
+        1 NQ base 5m      wick            0.000        0.250        True    True  -1.006  -0.006
+        2 ES base 1m    atr1.0            0.250        0.000        True    True  -1.209  -0.003
+        1  NQ smt 5m      wick            0.000        0.250        True    True  -1.340  -0.002
+        1 NQ base 5m      wick            0.250        0.250        True    True  -1.428  -0.008
+        2 NQ base 5m      wick            0.250        0.250        True    True  -1.428  -0.008
+        2 NQ base 5m    atr1.5            0.250        0.250        True    True  -1.465  -0.013
+        1 ES base 5m      wick            0.000        0.000        True    True  -1.510  -0.001
+        1 ES base 5m      wick            0.000        0.250        True    True  -1.510  -0.001
+        1 ES base 5m      wick            0.250        0.000        True    True  -1.510  -0.001
+        1 ES base 5m      wick            0.250        0.250        True    True  -1.510  -0.001
+        1  ES smt 5m      wick            0.000        0.000        True    True  -1.510  -0.001
+        1  ES smt 5m      wick            0.000        0.250        True    True  -1.510  -0.001
+        1  ES smt 5m      wick            0.250        0.000        True    True  -1.510  -0.001
+        1  ES smt 5m      wick            0.250        0.250        True    True  -1.510  -0.001
+        2 ES base 5m      wick            0.250        0.000        True    True  -1.510  -0.001
+        2 ES base 5m      wick            0.250        0.250        True    True  -1.510  -0.001
+        2 ES base 5m    atr1.0            0.250        0.000        True    True  -1.510  -0.001
+        2 ES base 5m    atr1.0            0.250        0.250        True    True  -1.510  -0.001
+        2 ES base 5m    atr1.5            0.250        0.000        True    True  -1.510  -0.001
+        2 ES base 5m    atr1.5            0.250        0.250        True    True  -1.510  -0.001
+        2  ES smt 5m      wick            0.250        0.000        True    True  -1.510  -0.001
+        2  ES smt 5m      wick            0.250        0.250        True    True  -1.510  -0.001
+        2  ES smt 5m    atr1.0            0.250        0.000        True    True  -1.510  -0.001
+        2  ES smt 5m    atr1.0            0.250        0.250        True    True  -1.510  -0.001
+        2  ES smt 5m    atr1.5            0.250        0.000        True    True  -1.510  -0.001
+        2  ES smt 5m    atr1.5            0.250        0.250        True    True  -1.510  -0.001
+        2 NQ base 5m   session            0.250        0.250        True    True  -1.511  -0.013
+        2 NQ base 5m    atr1.0            0.250        0.000        True    True  -1.624  -0.014
+        2 ES base 5m    atr2.0            0.250        0.000        True    True  -1.691  -0.002
+        2 ES base 5m    atr2.0            0.250        0.250        True    True  -1.691  -0.002
+        2  ES smt 5m    atr2.0            0.250        0.000        True    True  -1.691  -0.002
+        2  ES smt 5m    atr2.0            0.250        0.250        True    True  -1.691  -0.002
+        2 NQ base 5m    atr1.5            0.250        0.000        True    True  -1.857  -0.015
+        1  NQ smt 5m      wick            0.250        0.250        True    True  -1.863  -0.004
+        2  NQ smt 5m      wick            0.250        0.250        True    True  -1.863  -0.004
+        2 NQ base 5m    atr2.0            0.250        0.250        True    True  -1.870  -0.016
+        1  NQ smt 5m      wick            0.000        0.000        True    True  -1.923  -0.005
+        2 NQ base 5m   session            0.250        0.000        True    True  -1.981  -0.016
+        1 NQ base 5m      wick            0.000        0.000        True    True  -1.985  -0.009
+        2 ES base 1m    atr1.5            0.250        0.000        True    True  -1.994  -0.004
+        2  NQ smt 5m    atr1.0            0.250        0.250        True    True  -2.174  -0.008
+        1 NQ base 5m      wick            0.250        0.000        True    True  -2.289  -0.011
+        2 NQ base 5m      wick            0.250        0.000        True    True  -2.289  -0.011
+        1  NQ smt 5m      wick            0.250        0.000        True    True  -2.307  -0.007
+        2  NQ smt 5m      wick            0.250        0.000        True    True  -2.307  -0.007
+        2 ES base 1m      wick            0.250        0.000        True    True  -2.368  -0.001
+        2  NQ smt 5m   session            0.250        0.250        True    True  -2.493  -0.009
+        2  NQ smt 5m    atr1.0            0.250        0.000        True    True  -2.581  -0.010
+        2 NQ base 5m    atr2.0            0.250        0.000        True    True  -2.610  -0.021
+        2  NQ smt 5m    atr1.5            0.250        0.250        True    True  -2.633  -0.010
+        2  NQ smt 5m    atr1.5            0.250        0.000        True    True  -2.713  -0.011
+        2 ES base 1m    atr2.0            0.250        0.000        True    True  -2.714  -0.005
+        2  NQ smt 5m    atr2.0            0.250        0.250        True    True  -2.783  -0.011
+        2  NQ smt 5m   session            0.250        0.000        True    True  -2.858  -0.012
+        2 NQ base 1m      wick            0.250        0.000       False    True  -3.001  -0.001
+        2 NQ base 1m      wick            0.250        0.250       False    True  -3.001  -0.001
+        2 NQ base 1m    atr1.0            0.250        0.000       False    True  -3.001  -0.001
+        2 NQ base 1m    atr1.0            0.250        0.250       False    True  -3.001  -0.001
+        2 NQ base 1m    atr1.5            0.250        0.000       False    True  -3.001  -0.001
+        2 NQ base 1m    atr1.5            0.250        0.250       False    True  -3.001  -0.001
+        2 NQ base 1m    atr2.0            0.250        0.000       False    True  -3.001  -0.001
+        2 NQ base 1m    atr2.0            0.250        0.250       False    True  -3.001  -0.001
+        2 NQ base 1m   session            0.250        0.000       False    True  -3.001  -0.001
+        2 NQ base 1m   session            0.250        0.250       False    True  -3.001  -0.001
+        2  NQ smt 1m      wick            0.250        0.000       False    True  -3.001  -0.001
+        2  NQ smt 1m      wick            0.250        0.250        True    True  -3.001  -0.001
+        2  NQ smt 1m      wick            0.250        0.250       False    True  -3.001  -0.001
+        2  NQ smt 1m    atr1.0            0.250        0.000       False    True  -3.001  -0.001
+        2  NQ smt 1m    atr1.0            0.250        0.250        True    True  -3.001  -0.001
+        2  NQ smt 1m    atr1.0            0.250        0.250       False    True  -3.001  -0.001
+        2  NQ smt 1m    atr1.5            0.250        0.000       False    True  -3.001  -0.001
+        2  NQ smt 1m    atr1.5            0.250        0.250        True    True  -3.001  -0.001
+        2  NQ smt 1m    atr1.5            0.250        0.250       False    True  -3.001  -0.001
+        2  NQ smt 1m    atr2.0            0.250        0.000       False    True  -3.001  -0.001
+        2  NQ smt 1m    atr2.0            0.250        0.250        True    True  -3.001  -0.001
+        2  NQ smt 1m    atr2.0            0.250        0.250       False    True  -3.001  -0.001
+        2  NQ smt 1m   session            0.250        0.000       False    True  -3.001  -0.001
+        2  NQ smt 1m   session            0.250        0.250        True    True  -3.001  -0.001
+        2  NQ smt 1m   session            0.250        0.250       False    True  -3.001  -0.001
+        2  NQ smt 5m    atr2.0            0.250        0.000        True    True  -3.252  -0.014
+        2 ES base 1m   session            0.250        0.000        True    True  -3.696  -0.006
+        2 NQ base 1m      wick            0.250        0.250        True    True  -4.233  -0.001

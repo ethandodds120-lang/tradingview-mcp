@@ -335,9 +335,11 @@ The 5-minute model (`entry_tf = 5`) is untouched except for §11.4.
 | `atr2.0` | entry − 2.0 × ATR | |
 | `session` | (lowest low of trading day D up to the entry bar) − `stop_buffer_atr` × ATR | "beyond the session extreme"; coincides with `wick` whenever the sweep set the day's low, which is often |
 
-ATR is **ATR(14) of the 5-minute context** in both models, at the 5-minute bar
-containing the entry, so the multiples mean the same thing on both timeframes
-and are comparable to round 1's 3.4 R figure. Targets do not change — the next
+ATR is **ATR(14) of the 5-minute context** in both models, read at the newest
+*completed* context bar at the fill — on 1-minute entries the bar containing
+the fill is still forming, and §11.3 forbids reading a partial bar; on
+5-minute entries the two are the same bar. The multiples therefore mean the
+same thing on both timeframes and are comparable to round 1's 3.4 R figure. Targets do not change — the next
 pool — so wider stops mean lower reward-to-risk; that trade-off is the test.
 
 ### 11.5 Grid and the cumulative trial count
@@ -352,7 +354,12 @@ stop_buffer_atr fixed at 0.25 (round 1 found 0 vs 0.25 immaterial)
 2 timeframes × 2 instruments × 2 variants × 20 = **160 new trials**. Round 1's
 32 are counted in full even though eight of them recur here, so the
 cumulative count is **192**. The deflated Sharpe of the best trial is reported
-against 192; `tjr_intraday_search.py` pools everything.
+against 192; `tjr_intraday_search.py` pools everything. PBO is the one
+statistic that cannot be pooled that far: its combinatorial cross-validation
+needs every column on one timeline, and the 1-minute frames are a different
+timeline from the 5-minute ones (a different span, at a different grain), so
+the script reports one pooled PBO per timeframe — all 112 five-minute
+columns in one matrix, all 80 one-minute columns in another.
 
 ### 11.6 Registry
 
@@ -375,6 +382,90 @@ against 192; `tjr_intraday_search.py` pools everything.
   `stop_mode` produces the stop the table says on that day; a mid-5-minute-bar
   truncation test.
 - `tjr` byte-identical; `run.py --strategy tjr --synthetic --quick` identical.
+
+### 11.8 Deviations recorded during the build
+
+Each was a place where the contract as first written was silent or
+self-contradictory; each was resolved toward causality, and none changes a
+5-minute result (round 1's twelve trades reproduce bar for bar).
+
+- **ATR at the fill (1-minute entries):** read at the newest completed
+  5-minute context bar, not the forming one — see §11.4.
+- **`session` stop extreme:** the trading day's extreme over input bars
+  strictly *before* the fill bar. Including the fill bar would use that bar's
+  own low to place a stop that the same bar is then tested against, which
+  contradicts the same-bar stop rule in §4.6.
+- **`min_fvg_atr` on 1-minute entries** measures a 1-minute gap against the
+  1-minute frame's own ATR(14), as `find_fvg` documents; only the stop
+  multiples and buffer use the context ATR. At the default of 0.0 this has no
+  effect.
+- **A bin missing its :04 minute is never `done`:** no sweep, BOS or ATR is
+  read from it. It still exists in the context frame, so a later completed bin
+  can see it as a swing neighbour — which is causal, since by then it is in
+  the past. Two such bins exist in the ES 1-minute file (both at 19:30 ET,
+  nowhere near the windows); four other short bins have their :04 minute and
+  complete normally. Review measured zero partial-bin reads over 20 runs.
+- **Leg FVG selection** takes the freshest gap *that passes the EQ rule*, not
+  the freshest gap then EQ-tested. This is round 1's behaviour, reproduced bar
+  for bar, so it is not a §11 change — but one 1-minute trade (NQ 08-28) exists
+  only under this reading: the freshest leg gap was in premium and was passed
+  over for an earlier one in discount. Recorded because it is a reading.
+- **PBO pooled per timeline**, not across the 192 — §11.5.
+
+## 12. Round 2 findings — and the verdict (2026-09-12)
+
+Reviewed by two adversarial passes, neither refuted; acceptance 7/7 on the
+1-minute frames (causality clean at every truncation including inside open
+trades; zero invariant failures across all five stop modes; round 1 reproduced
+bar for bar). Printouts in `results/tjr_intraday/gauntlet_r2_*.txt` and
+`cumulative_search_round2.txt`.
+
+**Data.** TradingView's depth is a bar count, about 41k bars at any timeframe.
+At 1 minute that is **30 sessions** (Aug 3 → Sep 11), against the ~100
+pre-specified in §11.2. The 1-minute results below are therefore run and
+recorded, and are not evidence either way. The 5-minute half keeps its 149.
+
+**The stop-width variable on 5 minutes, 149 sessions, base variant:**
+
+| stop_mode | NQ trades / wins / total R | ES trades / wins / total R |
+|---|---|---|
+| wick | 7 / 0 / −7.0 | 1 / 0 / −1.0 |
+| atr1.0 | 8 / 1 / −2.2 | 1 / 0 / −1.0 |
+| atr1.5 | 8 / 1 / −3.8 | 1 / 0 / −1.0 |
+| atr2.0 | 8 / 1 / −4.6 | 1 / 0 / −1.0 |
+| session | 8 / 1 / −4.5 | 1 / 1 / +1.3 |
+
+Widening the stop admits one extra NQ trade (the wick rule had rejected it as
+no-risk) and turns exactly one loss into a win; the other seven still stop.
+On ES only `session` rescues the single trade. The 3.4 R excursion round 1
+measured was real, but a fixed-multiple stop cannot buy it: every widening
+shrinks reward-to-risk faster than it adds wins, and total R gets *worse* from
+1.0 to 2.0 ATR. All eight 5-minute gauntlet runs fail every gate that measures
+an edge, as in round 1.
+
+**1-minute entries, 30 sessions.** NQ: 2 trades under `wick`, 3 under the ATR
+and session stops, every one a win. Look at what they are: a short with a
+**2.7 bps** stop that paid 12 R (1.5–4.5 R under the other stops), a long that
+never reached its target and was closed flat at 15:55 for +1 to +3 R, and a
+long that paid +0.7 R. ES: one trade, a loser under all five stops. The NQ
+1-minute gauntlet prints an out-of-sample Sharpe of 3.38 and "beats 98% of
+random entries" — from one fold of five that traded at all, t = 1.06, deflated
+Sharpe 0.24, PBO 67%, 40% of settings positive. That is what three trades look
+like when two of them win.
+
+**The cumulative search.** 192 trials, 91 of which never trade. The best is NQ
+1-minute with a 1.0-ATR stop: Sharpe +3.68 on three trades. Deflated against
+192 it scores **0.414**; the expected best-of-192 from pure noise is +4.29.
+Fail. PBO per timeline: 5-minute 56% (pass, noisy), 1-minute 67% (fail).
+
+**Verdict.** On the timeframe with enough data, TJR's rules followed exactly
+lose on every trade they take, and the one variable his own geometry pointed
+at — the stop — cannot fix that: it converts one loss in eight and makes the
+total worse. On the timeframe he specifies, the data runs to 30 sessions and
+three trades, and nothing that small can be called evidence, least of all
+when its best trade rests on a 2.7 bps stop. This is the second and final
+round. The registry keeps all four strategies, tagged `folklore`, as the
+calibration they are.
 
 ## 10. Acceptance
 

@@ -37,15 +37,16 @@ def et(hhmm: str, day_offset: int = 0) -> pd.Timestamp:
     return ts.tz_convert("UTC").tz_localize(None)
 
 
-def build_day(overrides: dict | None = None, night=INERT, day=INERT, extra_days: int = 0) -> pd.DataFrame:
-    """Two full CME sessions, D-1 and D, on 5-minute bars, plus `extra_days` inert
-    sessions after D. Keys of `overrides` are 'HH:MM' on D or '-1 HH:MM' on the
-    calendar day before, values are (o, h, l, c). `night` is the inert bar for
-    everything stamped before 08:30 ET on D (session D-1, Asia, London), `day`
-    for the rest."""
+def build_day(overrides: dict | None = None, night=INERT, day=INERT, extra_days: int = 0,
+              freq: str = "5min") -> pd.DataFrame:
+    """Two full CME sessions, D-1 and D, on `freq` bars (5-minute unless a test asks
+    for 1-minute), plus `extra_days` inert sessions after D. Keys of `overrides`
+    are 'HH:MM' on D or '-1 HH:MM' on the calendar day before, values are
+    (o, h, l, c). `night` is the inert bar for everything stamped before 08:30 ET
+    on D (session D-1, Asia, London), `day` for the rest."""
     start = pd.Timestamp(f"{(DAY - pd.Timedelta(days=2)).date()} 18:00", tz=ET)
-    end = pd.Timestamp(f"{(DAY + pd.Timedelta(days=extra_days)).date()} 16:55", tz=ET)
-    ix = pd.date_range(start, end, freq="5min", tz=ET)
+    end = pd.Timestamp(f"{(DAY + pd.Timedelta(days=extra_days)).date()} 17:00", tz=ET) - pd.Timedelta(freq)
+    ix = pd.date_range(start, end, freq=freq, tz=ET)
     ix = ix[~((ix.hour == 17))]                          # the daily maintenance hour
     cutoff = pd.Timestamp(f"{DAY.date()} 08:30", tz=ET)
     rows = [night if t < cutoff else day for t in ix]
@@ -392,6 +393,214 @@ def test_every_real_trade_satisfies_the_acceptance_list():
             assert t.zone_kind in ("fvg", "ifvg") and d.sweep_level == t.sweep_level
         # and the frame itself has the expected shape
         assert (res.position.index == df.index).all()
+
+
+# ────────────────────────────── round 2: the stop-width variable (§11.4) ──────────────────────────────
+
+def test_each_stop_mode_puts_the_stop_where_the_table_says():
+    """FULL_SETUP under the defaults, one mode at a time. ATR is the context's — on
+    the 5-minute frame that is atr(df, 14) at the entry bar, the same call the
+    module makes. The sweep bar printed the day's low, so `session` lands on
+    `wick`. Every mode still fills at 98.8 and runs to LON_H."""
+    df = build_day(FULL_SETUP)
+    i = df.index.get_loc(et("09:50"))
+    a = atr(df, 14)[i]
+    table = {"wick": 96.5 - 0.25 * a, "atr1.0": 98.8 - 1.0 * a, "atr1.5": 98.8 - 1.5 * a,
+             "atr2.0": 98.8 - 2.0 * a, "session": 96.5 - 0.25 * a}
+    assert tuple(table) == m.STOP_MODES
+    for mode, stop in table.items():
+        t = m.simulate(df, stop_mode=mode).trades
+        assert len(t) == 1, (mode, t)
+        row = t.iloc[0]
+        assert abs(row.stop - stop) < 1e-12, (mode, row.stop, stop)
+        assert row.entry == 98.8 and row.target == 102.0 and row.reason == "target", mode
+        assert row.stop_mode == mode and int(row.entry_tf) == 5
+        assert abs(row.r - (102.0 - 98.8) / (98.8 - row.stop)) < 1e-12
+    assert list(m.simulate(df).trades.columns) == m._TRADE_COLS
+    assert m._TRADE_COLS[-2:] == ["stop_mode", "entry_tf"]
+    for bad in ({"stop_mode": "atr3.0"}, {"entry_tf": 15}):
+        try:
+            m.simulate(df, **bad)
+        except ValueError as e:
+            assert next(iter(bad)) in str(e)
+        else:
+            raise AssertionError(f"{bad} must raise")
+
+
+def test_session_stop_is_the_wick_stop_unless_an_earlier_bar_went_lower():
+    df = build_day(FULL_SETUP)
+    w = m.simulate(df, stop_mode="wick").trades
+    s = m.simulate(df, stop_mode="session").trades
+    assert len(w) == 1 and len(s) == 1 and w.iloc[0].stop == s.iloc[0].stop
+    # An Asia bar of D printed 96.0, under the sweep's 96.5. ASIA_L moves to 96.0
+    # so the 09:35 wick now only takes LON_L; the sweep and the trade are the
+    # same, the session extreme is not.
+    lower = build_day(variant(**{"01:00": (100.0, 100.5, 96.0, 100.0)}))
+    w2 = m.simulate(lower, stop_mode="wick").trades
+    s2 = m.simulate(lower, stop_mode="session").trades
+    assert len(w2) == 1 and len(s2) == 1
+    assert w2.iloc[0].sweep_level == "LON_L" and s2.iloc[0].sweep_level == "LON_L"
+    assert w2.iloc[0].entry == s2.iloc[0].entry == 98.8
+    assert s2.iloc[0].stop < w2.iloc[0].stop
+    assert abs((w2.iloc[0].stop - s2.iloc[0].stop) - 0.5) < 1e-9      # same ATR buffer, 0.5 lower base
+    assert s2.iloc[0].stop < 96.0                                     # under the session low by the buffer
+
+
+# ────────────────────────────── round 2: the two-timeframe model (§11.3) ──────────────────────────────
+
+# The 1-minute day where every rule fires, long side. Same six levels as
+# FULL_SETUP. Structure lives on the 5-minute bins: a swing high 101.5 on the
+# 09:15 bin, the sweep on the 09:30 bin (wick 96.5 printed at 09:31, close
+# 98.0 back above LON_L 97), no BOS on the 09:35 bin, BOS on the 09:40 bin
+# (close 101.8 > 101.5, completing at 09:44). The bars into the open overlap so
+# no 1-minute gap forms before the leg; the leg leaves two bullish gaps under
+# EQ 99.0, [98.4, 98.5] at 09:37 and [98.7, 98.8] at 09:38, and three above
+# it that the discount rule must reject. The 09:43 minute alone would close
+# the partial 09:40 bin above 101.5: a model reading partial bins breaks
+# structure a minute early, and the truncation test below checks it does not.
+FULL_SETUP_1M = {
+    "-1 10:00": (100.0, 105.0, 95.0, 100.0),      # previous session's extremes
+    "-1 22:00": (100.0, 103.0, 98.0, 100.0),      # Asia of D
+    "05:00":    (100.0, 102.0, 97.0, 100.0),      # London of D
+    "09:17":    (100.0, 101.5, 99.5, 100.0),      # swing high 101.5 on the 09:15 bin, confirmed with the 09:25 bin (09:29)
+    "09:27":    (100.0, 100.5, 99.2, 99.3),       # the drift into the open
+    "09:28":    (99.3, 99.4, 98.7, 98.8),
+    "09:29":    (98.8, 99.3, 98.4, 98.5),
+    "09:30":    (98.5, 98.6, 98.2, 98.4),         # the 09:30 bin: o 98.5 h 98.6 l 96.5 c 98.0
+    "09:31":    (98.4, 98.5, 96.5, 97.2),         #   the wick, under ASIA_L 98 and LON_L 97
+    "09:32":    (97.2, 98.3, 97.1, 97.8),
+    "09:33":    (97.8, 98.3, 97.7, 98.2),
+    "09:34":    (98.2, 98.6, 98.1, 98.0),         #   completes the bin: the sweep bar
+    "09:35":    (98.0, 98.4, 97.9, 98.3),         # the 09:35 bin closes 99.5: no break yet
+    "09:36":    (98.3, 98.7, 98.2, 98.6),
+    "09:37":    (98.6, 99.0, 98.5, 98.9),         #   bullish gap [98.4, 98.5]
+    "09:38":    (98.9, 99.3, 98.8, 99.2),         #   bullish gap [98.7, 98.8]: the freshest under EQ
+    "09:39":    (99.2, 99.6, 99.0, 99.5),
+    "09:40":    (99.5, 100.0, 99.3, 99.9),        # the 09:40 bin: o 99.5 h 101.9 l 99.3 c 101.8
+    "09:41":    (99.9, 100.6, 99.8, 100.5),       #   gap [99.6, 99.8], premium
+    "09:42":    (100.5, 101.2, 100.4, 101.1),     #   gap [100.0, 100.4], premium
+    "09:43":    (101.1, 101.7, 101.0, 101.6),     #   the partial bin already closes above 101.5 here
+    "09:44":    (101.6, 101.9, 101.4, 101.8),     #   completes the bin: the BOS bar
+    "09:45":    (101.7, 101.9, 101.5, 101.7),     # holding up through the rest of the sweep window
+    "09:46":    (101.7, 101.9, 101.5, 101.7),
+    "09:47":    (101.7, 101.9, 101.5, 101.7),
+    "09:48":    (101.7, 101.9, 101.5, 101.7),
+    "09:49":    (101.7, 101.9, 101.5, 101.7),
+    "09:50":    (101.7, 101.8, 101.0, 101.2),     # the retrace
+    "09:51":    (101.2, 101.3, 100.0, 100.3),
+    "09:52":    (100.3, 100.4, 98.75, 99.6),      # into the gap: entry 98.8
+    "09:53":    (99.6, 100.4, 99.5, 100.3),
+    "09:54":    (100.3, 101.0, 100.2, 100.9),
+    "09:55":    (100.9, 101.6, 100.8, 101.5),
+    "09:56":    (101.5, 102.3, 101.4, 102.2),     # takes LON_H 102
+}
+
+
+def _context_atr(df: pd.DataFrame, length: int = 14) -> pd.Series:
+    """ATR(14) of the 5-minute bins, computed here rather than by the module."""
+    bins = (df[["open", "high", "low", "close"]]
+            .resample("5min", label="left", closed="left")
+            .agg({"open": "first", "high": "max", "low": "min", "close": "last"}).dropna())
+    return pd.Series(atr(bins, length), index=bins.index)
+
+
+def test_one_minute_day_produces_the_expected_trade():
+    df = build_day(FULL_SETUP_1M, freq="1min")
+    assert len(df) == 2 * 23 * 60
+    res = m.simulate(df, stop_buffer_atr=0.0, entry_tf=1)
+    t = res.trades
+    assert len(t) == 1, t
+    row = t.iloc[0]
+    assert row.side == 1
+    assert row.entry_time == et("09:52") and row.exit_time == et("09:56")
+    assert row.entry == 98.8 and row.stop == 96.5 and row.target == 102.0 and row.exit == 102.0
+    assert row.reason == "target" and row.bars == 4
+    assert abs(row.r - (102.0 - 98.8) / (98.8 - 96.5)) < 1e-12
+    assert row.sweep_level == "LON_L" and row.target_level == "LON_H" and row.zone_kind == "fvg"
+    assert row.stop_mode == "wick" and int(row.entry_tf) == 1
+    assert pd.Timestamp(row.session_day) == DAY
+    held = res.position[res.position != 0]
+    assert list(held.index) == [et("09:52"), et("09:53"), et("09:54"), et("09:55")], held
+    assert (held == 1).all()
+    # sweep and BOS are dated by the minute that completed their 5-minute bin
+    d = day_row(m.day_log(df, stop_buffer_atr=0.0, entry_tf=1))
+    assert d.outcome == "traded" and d.sweep_time == et("09:34") and d.bos_time == et("09:44")
+    assert d.fill_time == et("09:52") and d.zone_kind == "fvg"
+    clock = m.session_clock(df.index)
+    s, b, e = (df.index.get_loc(x) for x in (d.sweep_time, d.bos_time, row.entry_time))
+    assert clock.in_sweep[s] and clock.in_entry[e] and s < b < e
+    # the default buffer reads the context ATR at the newest COMPLETE bin, the
+    # 09:45 one (done at 09:49) — not the 09:50 bin the entry minute sits in
+    ctx = m.build_context(df, 1, 14)
+    i = df.index.get_loc(et("09:52"))
+    assert ctx.idx[i] == ctx.idx[df.index.get_loc(et("09:50"))] and not ctx.done[i]
+    assert ctx.last[i] == ctx.idx[df.index.get_loc(et("09:49"))] == ctx.idx[i] - 1
+    a = _context_atr(df)[et("09:45")]
+    assert abs(ctx.bars.atr[ctx.last[i]] - a) < 1e-12
+    dflt = m.simulate(df, entry_tf=1).trades
+    assert len(dflt) == 1 and abs(dflt.iloc[0].stop - (96.5 - 0.25 * a)) < 1e-12
+    for mode, stop in {"atr1.0": 98.8 - a, "atr1.5": 98.8 - 1.5 * a, "atr2.0": 98.8 - 2.0 * a,
+                       "session": 96.5 - 0.25 * a}.items():
+        tm = m.simulate(df, entry_tf=1, stop_mode=mode).trades
+        assert len(tm) == 1 and abs(tm.iloc[0].stop - stop) < 1e-12, mode
+    # SMT on 1-minute bars reads the pair's 5-minute bin: the same frame as pair
+    # swept too; a pair that held 97 on every minute of the 09:30 bin trades.
+    both = _with_pair(df, df)
+    assert m.simulate(both, stop_buffer_atr=0.0, entry_tf=1, smt=True).trades.empty
+    assert day_row(m.day_log(both, stop_buffer_atr=0.0, entry_tf=1, smt=True)).outcome == "smt"
+    pair = df.copy()
+    pair.loc[et("09:31"), "low"] = 97.5
+    tp = m.simulate(_with_pair(df, pair), stop_buffer_atr=0.0, entry_tf=1, smt=True).trades
+    assert len(tp) == 1 and bool(tp.iloc[0].smt) is True and tp.iloc[0].entry == 98.8
+
+
+def test_one_minute_truncation_inside_a_bin_never_reads_the_partial_bin():
+    """Cut the day at minutes that are not 5-minute boundaries. The position over
+    the overlap must not move, and the log must not know anything the completed
+    bins did not say: at 09:31 the partial 09:30 bin already shows the wick, at
+    09:43 the partial 09:40 bin already closes above the swing — neither counts."""
+    df = build_day(FULL_SETUP_1M, freq="1min")
+    kw = dict(stop_buffer_atr=0.0, entry_tf=1)
+    full = m.simulate(df, **kw)
+    full_log = day_row(m.day_log(df, **kw))
+    expect = {
+        "09:31": ("no_sweep", pd.NaT, pd.NaT),
+        "09:37": ("no_bos", et("09:34"), pd.NaT),
+        "09:43": ("no_bos", et("09:34"), pd.NaT),
+        "09:52": ("traded", et("09:34"), et("09:44")),
+        "09:58": ("traded", et("09:34"), et("09:44")),
+    }
+    for cut, (outcome, sweep, bos) in expect.items():
+        k = df.index.get_loc(et(cut)) + 1
+        assert df.index[k - 1].minute % 5 != 4, cut                   # a mid-bin cut, by construction
+        part = m.simulate(df.iloc[:k], **kw)
+        assert float((full.position.iloc[:k] - part.position).abs().max()) == 0.0, cut
+        d = day_row(m.day_log(df.iloc[:k], **kw))
+        assert d.outcome == outcome, (cut, d)
+        assert (d.sweep_time is pd.NaT and sweep is pd.NaT) or d.sweep_time == sweep, (cut, d)
+        assert (d.bos_time is pd.NaT and bos is pd.NaT) or d.bos_time == bos, (cut, d)
+        for col in ("sweep_time", "bos_time", "fill_time", "sweep_level", "zone_kind"):
+            v = d[col]
+            if v is not None and v is not pd.NaT:
+                assert v == full_log[col], (cut, col, v, full_log[col])
+        if cut == "09:52":
+            assert part.trades.empty and part.position.iloc[-1] == 1   # opened on the last bar
+        elif cut == "09:58":
+            assert len(part.trades) == 1 and part.trades.iloc[0].reason == "target"
+
+
+def test_entry_tf_1_is_flat_with_no_0930_bar_and_on_five_minute_bars():
+    for frame in (synthetic(n=400), _daily_frame()):
+        s = m.signal(frame, entry_tf=1)
+        assert isinstance(s, pd.Series) and len(s) == len(frame) and (s == 0).all()
+        res = m.simulate(frame, entry_tf=1)
+        assert res.trades.empty and list(res.trades.columns) == m._TRADE_COLS
+        assert m.day_log(frame, entry_tf=1).empty
+    # a 5-minute frame has no :04 minute, so no context bar ever completes
+    five = build_day(FULL_SETUP)
+    res = m.simulate(five, stop_buffer_atr=0.0, entry_tf=1)
+    assert res.trades.empty and (res.position == 0).all()
+    assert set(m.day_log(five, stop_buffer_atr=0.0, entry_tf=1).outcome) == {"no_sweep"}
 
 
 # ────────────────────────────── runner ──────────────────────────────
