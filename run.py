@@ -31,12 +31,23 @@ except (AttributeError, ValueError):
     pass
 
 
-def load(args) -> tuple[pd.DataFrame, str]:
+def load(args) -> tuple[pd.DataFrame, str, bool]:
+    """Returns (data, label, is_panel).
+
+    A panel is a dates x tickers price frame; everything else is a single-
+    instrument OHLCV frame. They are not interchangeable, and the third element
+    is what stops a cross-sectional strategy being handed one close column.
+    """
+    if args.panel_csv:
+        return data.load_panel_csv(args.panel_csv), args.panel_csv, True
+    if args.panel_synthetic:
+        return (data.synthetic_panel(n=args.synthetic_bars, seed=args.seed),
+                "SYNTHETIC CORRELATED PANEL", True)
     if args.csv:
-        return data.load_csv(args.csv), args.csv
+        return data.load_csv(args.csv), args.csv, False
     if args.yahoo:
-        return data.load_yahoo(args.yahoo, start=args.start), args.yahoo
-    return data.synthetic(n=args.synthetic_bars, seed=args.seed), "SYNTHETIC RANDOM WALK"
+        return data.load_yahoo(args.yahoo, start=args.start), args.yahoo, False
+    return data.synthetic(n=args.synthetic_bars, seed=args.seed), "SYNTHETIC RANDOM WALK", False
 
 
 def rule(char="─", n=78):
@@ -62,7 +73,7 @@ def family_line(name: str, s: dict) -> str:
     return metrics.format_summary(f"{name:<14}{tag:<12}", s)
 
 
-def head_to_head(df, costs, bt, args):
+def head_to_head(df, costs, bt, args, kind="single"):
     """Run every strategy in both families and compare the families, not the names.
 
     The interesting column is cost drag. Predictive strategies trade on setups and
@@ -75,10 +86,10 @@ def head_to_head(df, costs, bt, args):
     """
     rows = []
     for fam in ("predictive", "systematic", "benchmark"):
-        for name in by_family(fam):
+        for name in by_family(fam, kind):
             strat = REGISTRY[name]
             print(f"  running {name} ...", flush=True)
-            base = engine.run(df, strat.signal(df), costs, **bt)
+            base = strat.backtest(df, strat.signal(df), costs, **bt)
             summ = metrics.summary(base)
 
             wf = validate.walk_forward(df, strat, costs, n_folds=args.folds, **bt)
@@ -169,6 +180,11 @@ def main():
     src.add_argument("--yahoo", help="ticker via yfinance")
     src.add_argument("--start", default="2005-01-01")
     src.add_argument("--synthetic", action="store_true", help="use a random walk (the null hypothesis)")
+    src.add_argument("--panel-csv", help="dates x tickers price panel (wide or long) "
+                                         "for cross-sectional strategies")
+    src.add_argument("--panel-synthetic", action="store_true",
+                     help="correlated random-walk panel — the null hypothesis for "
+                          "a cross-sectional test")
     src.add_argument("--synthetic-bars", type=int, default=4000)
     src.add_argument("--seed", type=int, default=0)
 
@@ -215,14 +231,15 @@ def main():
                     parsed = val
             strat_obj.params[key] = parsed
 
-    df, label = load(args)
+    df, label, is_panel = load(args)
     costs = engine.CostModel(commission_bps=args.cost_bps / 2, slippage_bps=args.cost_bps / 2)
     bt = dict(vol_target=args.vol_target)
 
     print()
     rule("═")
     print(f"  DATA   {label}")
-    print(f"         {len(df)} bars   {df.index[0].date()} → {df.index[-1].date()}")
+    width = f"{df.shape[1]} instruments x " if is_panel else ""
+    print(f"         {width}{len(df)} bars   {df.index[0].date()} → {df.index[-1].date()}")
     print(f"  COSTS  {args.cost_bps:.1f} bps round trip    VOL TARGET {args.vol_target:.0%}")
     rule("═")
 
@@ -231,19 +248,21 @@ def main():
         print("        Any strategy scoring well here is measuring overfitting.\n")
 
     if args.head_to_head:
-        head_to_head(df, costs, bt, args)
+        head_to_head(df, costs, bt, args, "panel" if is_panel else "single")
         return
 
     # ── headline comparison ──
     # --family on its own means "compare that family"; there is nothing else a
     # filter could usefully do to a single-strategy run.
     compare = args.compare or args.family != "all"
+    kind = "panel" if is_panel else "single"
     print("\nIN-SAMPLE (the number that lies to you)\n")
     if compare:
-        for fam, names in grouped(args.family).items():
+        for fam, names in grouped(args.family, kind).items():
             print(f"  {fam.upper()} — {FAMILY_BLURB[fam]}")
             for name in names:
-                r = engine.run(df, REGISTRY[name].signal(df), costs, **bt)
+                st = REGISTRY[name]
+                r = st.backtest(df, st.signal(df), costs, **bt)
                 print("    " + family_line(name, metrics.summary(r)))
             print()
         rule()
@@ -251,16 +270,19 @@ def main():
         print("Run --head-to-head to compare the families rather than the names.\n")
         return
 
-    for name in [args.strategy, "buy_hold"]:
+    # the benchmark has to match the shape of the thing it benchmarks: owning one
+    # instrument means nothing next to a book that ranks twenty
+    bench = "equal_weight" if is_panel else "buy_hold"
+    for name in [args.strategy, bench]:
         s = REGISTRY[name]
-        r = engine.run(df, s.signal(df), costs, **bt)
+        r = s.backtest(df, s.signal(df), costs, **bt)
         print("  " + metrics.format_summary(name, metrics.summary(r)))
 
     strat = REGISTRY[args.strategy]
-    if args.strategy == "buy_hold":
+    if args.strategy in ("buy_hold", "equal_weight"):
         return
 
-    base = engine.run(df, strat.signal(df), costs, **bt)
+    base = strat.backtest(df, strat.signal(df), costs, **bt)
     base_summary = metrics.summary(base)
 
     # ── path-dependent models report at the trade level too ──
@@ -326,7 +348,8 @@ def main():
         pos = base.position
         trade_rate = max(float((pos.diff().abs() > 1e-9).mean()), 0.001)
         rb = validate.random_benchmark(df, base_summary["sharpe"], trade_rate, 10,
-                                       costs, n_trials=args.trials, **bt)
+                                       costs, n_trials=args.trials,
+                                       strat=strat, **bt)
         print(f"  strategy Sharpe      {rb['strategy']:.2f}")
         print(f"  random mean          {rb['random_mean']:.2f} (sd {rb['random_std']:.2f})")
         print(f"  random 95th pct      {rb['random_p95']:.2f}")

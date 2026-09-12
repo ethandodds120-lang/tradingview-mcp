@@ -40,11 +40,13 @@ from typing import Any, Callable, Dict
 
 import pandas as pd
 
+from .. import engine
 from . import benchmarks, predictive, systematic
-from .benchmarks import buy_hold, random_entry
+from .benchmarks import buy_hold, equal_weight, random_entry, random_panel
 from .predictive import fvg
 from .predictive import tjr_signal as tjr
-from .systematic import donchian, ma_cross, rsi_meanrev, trend_filter, tsmom
+from .systematic import (donchian, ma_cross, rsi_meanrev, trend_filter,
+                         tsmom, xs_momentum, xs_reversal)
 
 #: The families a strategy may belong to. 'benchmark' is not a family in the
 #: sense the other two are — it is the control group.
@@ -69,6 +71,9 @@ class Strategy:
     thesis: str = ""            # one sentence: what has to be true for this to work
     evidence: str = ""          # 'published' | 'folklore' | 'untested'
     source: str = ""            # citation or origin
+    # 'single' takes an OHLCV frame and returns a position Series.
+    # 'panel' takes a dates x tickers price frame and returns a weight DataFrame.
+    kind: str = "single"
 
     def __post_init__(self):
         # Defaults exist only so the dataclass is constructible; a strategy that
@@ -80,11 +85,35 @@ class Strategy:
         if self.evidence not in EVIDENCE:
             raise ValueError(
                 f"{self.name}: evidence must be one of {EVIDENCE}, got {self.evidence!r}")
+        if self.kind not in ("single", "panel"):
+            raise ValueError(
+                f"{self.name}: kind must be 'single' or 'panel', got {self.kind!r}")
 
-    def signal(self, df: pd.DataFrame, **overrides) -> pd.Series:
+    @property
+    def is_panel(self) -> bool:
+        return self.kind == "panel"
+
+    def signal(self, df: pd.DataFrame, **overrides):
+        """A position Series, or a weight DataFrame for a panel strategy.
+
+        The same three corrections apply either way — reindex to the data, fill
+        gaps flat, and clip to a unit position per name — because a DataFrame
+        takes them elementwise.
+        """
         p = {**self.params, **overrides}
         sig = self.fn(df, **p)
         return sig.reindex(df.index).fillna(0.0).clip(-1, 1)
+
+    def backtest(self, df: pd.DataFrame, signal, costs, **bt_kwargs):
+        """Route to the right engine. This is the single dispatch point.
+
+        Everything in validate.py goes through here rather than calling
+        engine.run directly, so a validator never has to know whether it is
+        looking at one instrument or twenty.
+        """
+        if self.is_panel:
+            return engine.run_panel(df, signal, costs, **bt_kwargs)
+        return engine.run(df, signal, costs, **bt_kwargs)
 
 
 # ─────────────────────────── registry ───────────────────────────
@@ -175,6 +204,30 @@ REGISTRY: Dict[str, Strategy] = {
                "are not from it, and the effect rarely clears costs.",
     ),
 
+    # ── systematic, cross-sectional: ranked across names rather than over time ──
+    "xs_momentum": Strategy(
+        "xs_momentum", xs_momentum, {"lookback": 126, "cut": 0.2, "hold": 21},
+        {"lookback": [63, 126, 252], "cut": [0.1, 0.2], "hold": [5, 21]},
+        family="systematic", kind="panel",
+        thesis="Relative performance persists: the names that led the universe "
+               "over the past six months keep leading it over the next month.",
+        evidence="published",
+        source="Jegadeesh & Titman (1993); Asness, Moskowitz & Pedersen (2013), "
+               "'Value and Momentum Everywhere'. Crash risk documented in "
+               "Daniel & Moskowitz (2016), 'Momentum Crashes'.",
+    ),
+    "xs_reversal": Strategy(
+        "xs_reversal", xs_reversal, {"lookback": 5, "cut": 0.2, "hold": 5},
+        {"lookback": [3, 5, 10], "cut": [0.1, 0.2]},
+        family="systematic", kind="panel",
+        thesis="Over a week, the names that fell most bounce back relative to "
+               "the names that rose most.",
+        evidence="folklore",
+        source="Short-horizon reversal is in the record, but Heston, Korajczyk & "
+               "Sadka attribute most of it to sub-hour liquidity imbalance and "
+               "bid-ask bounce — costs a retail taker pays rather than earns.",
+    ),
+
     # ── benchmark: what both families have to beat ──
     "buy_hold": Strategy(
         "buy_hold", buy_hold, {}, {},
@@ -183,6 +236,23 @@ REGISTRY: Dict[str, Strategy] = {
                "cost drag.",
         evidence="published",
         source="Equity risk premium; Dimson, Marsh & Staunton (2002).",
+    ),
+    "equal_weight": Strategy(
+        "equal_weight", equal_weight, {}, {},
+        family="benchmark", kind="panel",
+        thesis="Own the universe. No ranking, no view, minimal turnover — what a "
+               "cross-sectional strategy has to beat to have earned its ranking.",
+        evidence="published",
+        source="The panel analogue of buy_hold.",
+    ),
+    "random_panel": Strategy(
+        "random_panel", random_panel, {"cut": 0.2, "hold": 21, "seed": 0}, {},
+        family="benchmark", kind="panel",
+        thesis="Nothing has to be true. Same leg count and same rebalance "
+               "frequency as a real cross-sectional book, with the names drawn "
+               "at random — so the comparison isolates the ranking.",
+        evidence="untested",
+        source="Not a claim about markets. A control.",
     ),
     "random_entry": Strategy(
         "random_entry", random_entry, {"trade_rate": 0.02, "seed": 0, "hold": 10}, {},
@@ -199,13 +269,22 @@ REGISTRY: Dict[str, Strategy] = {
 
 # ─────────────────────────── family helpers ───────────────────────────
 
-def by_family(family: str = "all") -> Dict[str, Strategy]:
-    """The registry filtered to one family. 'all' returns everything."""
-    if family == "all":
-        return dict(REGISTRY)
-    if family not in FAMILIES:
-        raise ValueError(f"unknown family {family!r}; have {FAMILIES + ('all',)}")
-    return {k: s for k, s in REGISTRY.items() if s.family == family}
+def by_family(family: str = "all", kind: str | None = None) -> Dict[str, Strategy]:
+    """The registry filtered to one family, and optionally to one kind.
+
+    `kind` matters because the two are not interchangeable: handing a panel
+    strategy a single close column, or a single-asset strategy a frame of twenty
+    tickers, does not fail cleanly. Callers that have data in hand should say
+    which shape it is.
+    """
+    sel = REGISTRY if family == "all" else None
+    if sel is None:
+        if family not in FAMILIES:
+            raise ValueError(f"unknown family {family!r}; have {FAMILIES + ('all',)}")
+        sel = {k: s for k, s in REGISTRY.items() if s.family == family}
+    if kind is not None:
+        sel = {k: s for k, s in sel.items() if s.kind == kind}
+    return dict(sel)
 
 
 def family_of(name: str) -> str:
@@ -218,9 +297,9 @@ def names_by_family(family: str = "all") -> list[str]:
     return list(by_family(family))
 
 
-def grouped(family: str = "all") -> Dict[str, list[str]]:
+def grouped(family: str = "all", kind: str | None = None) -> Dict[str, list[str]]:
     """{family: [names]} in FAMILIES order, skipping families with no members."""
-    sel = by_family(family)
+    sel = by_family(family, kind)
     out: Dict[str, list[str]] = {}
     for fam in FAMILIES:
         members = [n for n, s in sel.items() if s.family == fam]
@@ -235,4 +314,5 @@ __all__ = [
     "predictive", "systematic", "benchmarks",
     "tjr", "fvg", "tsmom", "ma_cross", "donchian", "trend_filter",
     "rsi_meanrev", "buy_hold", "random_entry",
+    "xs_momentum", "xs_reversal", "equal_weight", "random_panel",
 ]

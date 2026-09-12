@@ -19,7 +19,9 @@ of SOL/USD on daily bars in 2026, and the harness exists to say which.
 
 from __future__ import annotations
 
+from .cross_sectional import xs_momentum, xs_reversal
 from .meanrev import rsi_meanrev
 from .momentum import donchian, ma_cross, trend_filter, tsmom
 
-__all__ = ["tsmom", "ma_cross", "donchian", "trend_filter", "rsi_meanrev"]
+__all__ = ["tsmom", "ma_cross", "donchian", "trend_filter", "rsi_meanrev",
+           "xs_momentum", "xs_reversal"]

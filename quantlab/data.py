@@ -101,3 +101,58 @@ def periods_per_year(index: pd.DatetimeIndex) -> float:
     if median_gap >= 86400:
         return 252.0
     return 252.0 * (6.5 * 3600 / median_gap)
+
+
+# ────────────────────────── panel data ──────────────────────────
+
+def load_panel_csv(path: str) -> pd.DataFrame:
+    """A dates x tickers close-price frame, from wide or long CSV.
+
+    Wide:  date,SPY,QQQ,...        one column per ticker
+    Long:  date,ticker,close       one row per ticker per date
+
+    Long format is what fund and vendor exports look like, wide is what you get
+    from a pivot; accept both rather than make the caller reshape. Rows with any
+    missing name are dropped: a cross-sectional rank over a universe that changes
+    width mid-sample is comparing different things on different days.
+    """
+    df = pd.read_csv(path)
+    date_col = next((c for c in df.columns if c.lower() in ("date", "time", "timestamp")),
+                    df.columns[0])
+    df[date_col] = pd.to_datetime(df[date_col], utc=True).dt.tz_localize(None)
+
+    lower = {c.lower(): c for c in df.columns}
+    if "ticker" in lower or "symbol" in lower:
+        tkr = lower.get("ticker") or lower["symbol"]
+        price = lower.get("close") or lower.get("nav") or lower.get("price")
+        if price is None:
+            raise ValueError("long-format panel needs a close/price/nav column")
+        wide = df.pivot(index=date_col, columns=tkr, values=price)
+    else:
+        wide = df.set_index(date_col)
+
+    wide.index = pd.DatetimeIndex(wide.index).normalize()
+    wide = wide[~wide.index.duplicated(keep="last")].sort_index()
+    return wide.apply(pd.to_numeric, errors="coerce").dropna(how="any")
+
+
+def synthetic_panel(n_tickers: int = 20, n: int = 1500, seed: int = 0,
+                    mu: float = 0.0002, sigma: float = 0.012,
+                    market_beta: float = 0.6) -> pd.DataFrame:
+    """Correlated random walks. The null hypothesis for a cross-sectional test.
+
+    A panel of *independent* walks is the wrong null: real universes share a
+    market factor, and a dollar-neutral book hedges most of it away. Testing
+    against uncorrelated names would flatter any long/short strategy by handing
+    it diversification it will not have. `market_beta` is how much of each name's
+    move is the common factor.
+    """
+    rng = np.random.default_rng(seed)
+    market = rng.normal(mu, sigma, n)
+    cols = {}
+    for i in range(n_tickers):
+        idio = rng.normal(mu, sigma, n)
+        r = market_beta * market + np.sqrt(max(0.0, 1 - market_beta ** 2)) * idio
+        cols[f"SYN{i:02d}"] = 100 * np.exp(np.cumsum(r))
+    idx = pd.bdate_range("2010-01-01", periods=n)
+    return pd.DataFrame(cols, index=idx)

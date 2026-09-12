@@ -57,8 +57,14 @@ def t_stat(returns: pd.Series) -> float:
 
 def summary(res: BacktestResult) -> dict:
     eq, r, ppy = res.equity, res.returns, res.ppy
-    side = np.sign(res.position)
-    trades = int((side.diff().abs() > 0).sum())
+    if res.is_panel:
+        # A panel's `position` is gross exposure and never changes sign, so
+        # counting sign flips reports ~1 trade for a book that rebalances every
+        # month. Count the bars on which the book actually moved instead.
+        trades = int((res.traded > 1e-9).sum())
+    else:
+        side = np.sign(res.position)
+        trades = int((side.diff().abs() > 0).sum())
     gross_sh = sharpe(res.gross_returns, ppy)
     net_sh = sharpe(r, ppy)
     return {

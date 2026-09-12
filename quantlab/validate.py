@@ -18,6 +18,7 @@ import pandas as pd
 
 from . import engine, metrics
 from .strategies import Strategy, random_entry
+from .strategies.benchmarks import random_panel
 
 
 # ────────────────────── 0. causality ──────────────────────
@@ -45,10 +46,13 @@ def causality_check(df: pd.DataFrame, strat: Strategy, probes: int = 6) -> dict:
             continue
         part = strat.signal(df.iloc[:k])
         diff = (full.iloc[:k] - part).abs()
+        # A panel signal is a frame, so collapse across names before comparing:
+        # one leg leaking the future is as fatal as the only leg leaking it.
+        per_bar = diff.max(axis=1) if isinstance(diff, pd.DataFrame) else diff
         checked += 1
-        worst = max(worst, float(diff.max()))
-        if first_bad is None and float(diff.max()) > 1e-9:
-            first_bad = diff.index[diff.values.argmax()]
+        worst = max(worst, float(per_bar.max()))
+        if first_bad is None and float(per_bar.max()) > 1e-9:
+            first_bad = per_bar.index[per_bar.values.argmax()]
     return {"probes": checked, "max_diff": worst, "clean": worst <= 1e-9,
             "first_mismatch": first_bad}
 
@@ -105,7 +109,7 @@ def walk_forward(df: pd.DataFrame, strat: Strategy, costs: engine.CostModel,
         for combo in combos:
             try:
                 sig = strat.signal(train, **combo)
-                r = engine.run(train, sig, costs, **bt_kwargs)
+                r = strat.backtest(train, sig, costs, **bt_kwargs)
                 sh = metrics.sharpe(r.returns, r.ppy)
             except Exception:
                 continue
@@ -116,7 +120,7 @@ def walk_forward(df: pd.DataFrame, strat: Strategy, costs: engine.CostModel,
             continue
 
         sig = strat.signal(test, **best)
-        r = engine.run(test, sig, costs, **bt_kwargs)
+        r = strat.backtest(test, sig, costs, **bt_kwargs)
         oos = r.returns.iloc[-(test_end - train_end):]
         oos_chunks.append(oos)
 
@@ -156,7 +160,7 @@ def trial_matrix(df: pd.DataFrame, strat: Strategy, costs: engine.CostModel,
         combo = dict(zip(keys, values))
         try:
             sig = strat.signal(df, **combo)
-            r = engine.run(df, sig, costs, **bt_kwargs)
+            r = strat.backtest(df, sig, costs, **bt_kwargs)
             rows.append({**combo, "sharpe": metrics.sharpe(r.returns, r.ppy),
                          "max_dd": metrics.max_drawdown(r.equity)})
             cols.append(r.returns.values)
@@ -312,16 +316,23 @@ def probability_of_backtest_overfitting(matrix: np.ndarray, n_splits: int = 8) -
 
 def random_benchmark(df: pd.DataFrame, strat_sharpe: float, trade_rate: float,
                      hold: int, costs: engine.CostModel, n_trials: int = 500,
+                     strat: Strategy | None = None, cut: float = 0.2,
                      **bt_kwargs) -> dict:
     """Compare against coin-flip strategies with the same trade frequency.
 
     Returns the percentile your strategy occupies. Below ~95 means you have not
     distinguished your rules from randomness on this data.
     """
+    panel = strat is not None and strat.is_panel
     sharpes = []
     for seed in range(n_trials):
-        sig = random_entry(df, trade_rate=trade_rate, seed=seed, hold=hold)
-        r = engine.run(df, sig, costs, **bt_kwargs)
+        if panel:
+            # same number of legs, same rebalance frequency, random names
+            sig = random_panel(df, cut=cut, hold=hold, seed=seed)
+            r = engine.run_panel(df, sig, costs, **bt_kwargs)
+        else:
+            sig = random_entry(df, trade_rate=trade_rate, seed=seed, hold=hold)
+            r = engine.run(df, sig, costs, **bt_kwargs)
         sharpes.append(metrics.sharpe(r.returns, r.ppy))
     arr = np.array(sharpes)
     return {
@@ -348,7 +359,7 @@ def cost_sweep(df: pd.DataFrame, strat: Strategy,
     for bps in bps_levels:
         c = engine.CostModel(commission_bps=bps / 2, slippage_bps=bps / 2)
         sig = strat.signal(df)
-        r = engine.run(df, sig, c, **bt_kwargs)
+        r = strat.backtest(df, sig, c, **bt_kwargs)
         rows.append({"round_trip_bps": bps, "sharpe": metrics.sharpe(r.returns, r.ppy),
                      "cagr": metrics.cagr(r.equity, r.ppy)})
     return pd.DataFrame(rows)

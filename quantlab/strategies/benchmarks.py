@@ -17,6 +17,39 @@ import numpy as np
 import pandas as pd
 
 
+def equal_weight(prices: pd.DataFrame) -> pd.DataFrame:
+    """Own the whole universe, equally. The panel answer to buy_hold.
+
+    A cross-sectional strategy that cannot beat this has not earned its ranking;
+    it has earned the universe's return with extra steps and extra costs.
+    """
+    n = prices.shape[1]
+    return pd.DataFrame(1.0 / n, index=prices.index, columns=prices.columns)
+
+
+def random_panel(prices: pd.DataFrame, cut: float = 0.2, hold: int = 21,
+                 seed: int = 0) -> pd.DataFrame:
+    """Coin flips with the same shape as a real cross-sectional book.
+
+    Picks the same number of longs and shorts, at the same rebalance frequency,
+    as the strategy it stands in for — the names are the only thing chosen at
+    random. That is the point: holding turnover and gross exposure fixed isolates
+    whether the *ranking* did anything, rather than flattering a benchmark for
+    simply trading less.
+    """
+    rng = np.random.default_rng(seed)
+    cols = list(prices.columns)
+    k = max(1, int(len(cols) * cut))
+    w = pd.DataFrame(0.0, index=prices.index, columns=cols)
+    for i in range(0, len(prices), hold):
+        picks = rng.choice(len(cols), size=min(2 * k, len(cols)), replace=False)
+        block = np.zeros(len(cols))
+        block[picks[:k]] = 0.5 / k
+        block[picks[k:2 * k]] = -0.5 / k
+        w.iloc[i:i + hold] = block
+    return w
+
+
 def buy_hold(df: pd.DataFrame) -> pd.Series:
     return pd.Series(1.0, index=df.index)
 

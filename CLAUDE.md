@@ -218,3 +218,14 @@ need a proportionally larger gross edge to finish level.
 9. **Bootstrap drawdowns in blocks, never IID.** Volatility clustering is where
    drawdowns come from. On a clustered series the IID bootstrap reported -20.5% at
    the 95th percentile where the block bootstrap reported -33.4%.
+
+10. **Two Strategy kinds.** `kind="single"` takes an OHLCV frame and returns a
+    position Series; `kind="panel"` takes a dates x tickers price frame and
+    returns a weight frame. `Strategy.backtest()` is the only dispatch point —
+    never call `engine.run` directly from a validator, or panels silently break.
+11. **Panel vol targeting sizes the BOOK, never each leg.** Per-leg sizing is what
+    makes correlated names stack, which is the defect `paper.py portfolio`
+    reports. `run_panel` gets this right by construction; keep it that way.
+12. **Single-panel statistics are noisy.** Walk-forward OOS Sharpe on a null panel
+    has sd ~0.34 across seeds (mean -0.12, one standard error from zero). A single
+    OOS reading near 0.6 on a panel means nothing on its own.

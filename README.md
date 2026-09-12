@@ -102,12 +102,24 @@ about an average.
 | `trend_filter` | published | long while price is above its own MA — a drawdown overlay |
 | `rsi_meanrev` | folklore | short-term mean reversion — included to show how costs kill things |
 
+**Cross-sectional** — a subset of systematic, but a different *contract*. These
+take a dates x tickers price frame and return a weight frame, because "long the
+strongest fifth" has no meaning without the other four fifths to rank against.
+Run them with `--panel-csv` or `--panel-synthetic`.
+
+| name | evidence | what it is |
+|---|---|---|
+| `xs_momentum` | published | long the universe's leaders, short its laggards |
+| `xs_reversal` | folklore | the one-week mirror — expect costs to kill it |
+
 **Benchmark** — neither family. What both have to beat.
 
 | name | evidence | what it is |
 |---|---|---|
 | `buy_hold` | published | the opportunity cost you actually have to beat |
 | `random_entry` | untested | coin flips at your trade frequency — the null hypothesis |
+| `equal_weight` | published | own the whole universe — the panel answer to buy_hold |
+| `random_panel` | untested | random names, same leg count and rebalance rate |
 
 Both families make predictions, and both can be wrong. The distinction is what the
 claim rests on: **a pattern implying intent, versus a statistical property
