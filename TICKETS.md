@@ -9,7 +9,8 @@ deleting it when the commit that fixes it lands. Order matters and is stated.
    (plain code, no LLM in the loop)
 2. **T-7 indicator + human-exit experiment** — build only after T-1 and T-4
    are live; its Part 1 (trailing benchmark) and Part 2 (wide funnel) are
-   analysis and run now
+   done (2026-09-12, `DESIGN-tjr-human.md` §1 and §2.2); three definitions
+   need the user's call before the build (§2.2)
 3. **T-3 bootstrap ignores the rebalance band** — before any batch of new
    routed runs
 4. **T-2 incubation gate** (carried; not re-confirmed in the latest ordering)
@@ -42,10 +43,20 @@ by the bot. Pre-registered sample of 100 filled trades, pass bar fixed before
 trade one — `DESIGN-tjr-human.md` §5.
 
 **Gates.** Part 1 first: if a mechanical trailing rule harvests the excursion
-on its own, deploy the rule and skip the human. Part 2 next: the funnel on
-the wider spec, no gauntlet. Build after T-1 and T-4 are live — the run needs
-the kill rules and the push channel, and its human controls ride the same
-Telegram bot. Never goes live on the box before a dry run is shown.
+on its own, deploy the rule and skip the human. *Done:* none does; `atr1.0`
+is the best of five (+10.25 R on 11 trades, one NQ 1-minute trade is +12 of
+it) and is the human's benchmark. Part 2 next: the funnel on the wider spec,
+no gauntlet. *Done:* NQ 149 → 78 → 66 → 66 → 41 fills, ES 149 → 95 → 76 → 76
+→ 51 (round 1: 7 and 1); with `ifvg` counted only on a fresh inversion, 20
+and 26. Most of the widening comes through two definitions that barely
+filter (`ifvg` on already-inverted gaps; `eq` in discount by construction)
+and the ambiguity rule removes more round-1 sweeps than the new levels add.
+**Open before the build, the user's call:** `ifvg` fresh-only or literal;
+`eq` as a zone (keep / require a pullback / pair it); ambiguity within a
+level class or POC/HVN as targets only. Build after T-1 and T-4 are live —
+the run needs the kill rules and the push channel, and its human controls
+ride the same Telegram bot. Never goes live on the box before a dry run is
+shown.
 
 **Open cost item.** The signal layer runs on live ES/NQ 1-minute and 5-minute
 bars. The VPS has no futures feed (Alpaca serves none). Options and their

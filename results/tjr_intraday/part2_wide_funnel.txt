@@ -1,0 +1,199 @@
+TJR wide funnel (DESIGN-tjr-human.md section 2). Funnel only: no stop, target, exit, Sharpe, gate or verdict.
+params: poc_bin_ticks=4 (bin $1.00)  hvn_frac=0.5  hvn_max=6  composite=20 sessions  swings left/right=2/2  ote=0.79
+
+=== NQ  data/NQ_5min_tv.csv  41067 bars  2026-02-15 23:00:00 .. 2026-09-11 20:55:00 UTC ===
+
+1. levels at 09:25
+   sessions with a sweep-window bar: 149   (with a bar stamped exactly 09:30: 149)
+   present: ASIA_H:149  ASIA_L:149  LON_H:149  LON_L:149  PDH:148  PDL:148  H1_SH:142  H1_SL:147  H4_SH:134  H4_SL:146  POC_PREV:148  HVN(any):148
+   HVN count per day: 0:1  1:0  2:0  3:0  4:0  5:0  6:148
+   composite depth per day (sessions in the profile): 20:129  19:1  18:1  17:1  16:1  15:1  14:1  13:1  12:1  11:1  10:1  9:1  8:1  7:1  6:1  5:1  4:1  3:1  2:1  1:1  0:1
+   POC_PREV absent on: ['2026-02-16']   (first session in the file has no previous session)
+
+2. funnel
+   sessions 149 -> sweeps 78 -> confirmations 66 -> zones in discount/premium 66 -> fills 41
+   zones excluding the eq touch (which is always in discount by construction): 30
+   sweep-window bars skipped as ambiguous (a low and a high in one wick): 226 bars on 100 days
+   sweep days with no admissible opposing 5-minute swing (bos/ote cannot fire): 0
+   sweep days whose pre-sweep swing sits on the wrong side of the sweep extreme (degenerate leg): 1
+   sweeps by side: long 37  short 41
+   cross-check, this code with round 1's six levels only: sweeps 93; sweep day, bar, side and level identical to tjr_intraday.day_log: yes
+   six-level sweep days lost under the wide set: 29 (of which by the ambiguity rule: 29); days swept only under the wide set: 14; swept under both: 64 (same side 54, same bar 38)
+   ifvg on the confirmation bar: 65; resting on a FRESH inversion (no bar closed through the gap between its completion and the sweep bar): 26; on already-inverted gaps only: 39
+   sweep bar: 09:30:20  09:35:22  09:40:15  09:45:21
+   confirmation bar: 09:35:10  09:40:14  09:45:13  09:50:15  09:55:6  10:00:4  10:05:4
+
+3. breakdowns
+   sweeps by level type, every breached level counted:  ASIA:52  LON:55  PD:32  H1:69  H4:39  POC:17  HVN:115   (levels per sweep bar: 4.86)
+   sweeps by level type, deepest level (the setup's):   ASIA:18  LON:14  PD:5  H1:12  H4:8  POC:6  HVN:15
+     by name, every breached:  H1_SH:37  H1_SL:32  LON_H:28  LON_L:27  ASIA_H:26  ASIA_L:26  HVN_1:26  H4_SH:23  HVN_3:23  HVN_6:19  HVN_2:17  PDL:17  POC_PREV:17  H4_SL:16  HVN_5:16  PDH:15  HVN_4:14
+     by name, deepest:         ASIA_L:11  ASIA_H:7  HVN_6:7  LON_H:7  LON_L:7  H1_SH:6  H1_SL:6  POC_PREV:6  H4_SH:4  H4_SL:4  HVN_3:3  PDH:3  HVN_1:2  PDL:2  HVN_2:1  HVN_4:1  HVN_5:1
+   sweep days where NO round-1 level was breached (the wide levels alone made the sweep): 8
+   confirmations by type, on the confirmation bar:  bos:11  ifvg:65  ote:21   combos: ifvg:45  bos+ifvg+ote:10  ifvg+ote:10  bos+ote:1
+   confirmations by type, any bar by 10:05:        bos:25  ifvg:66  ote:33
+   confirmations, first-to-fire ONLY that type:    bos:0  ifvg:45  ote:0
+   zones by type, any qualifying (in discount/premium): fvg:5  eq:66  ob:12  breaker:16
+   zones by type, the one used (freshest at the end or at the fill): fvg:5  eq:57  ob:0  breaker:4
+   fills by (level type, confirmation types, zone used):
+     HVN   ifvg          eq       8
+     ASIA  ifvg          eq       6
+     H4    ifvg          eq       4
+     PD    ifvg          eq       3
+     POC   ifvg          eq       3
+     ASIA  ifvg          breaker  2
+     H1    ifvg          eq       2
+     LON   ifvg          eq       2
+     LON   ifvg+ote      eq       2
+     ASIA  ifvg+ote      eq       1
+     H1    bos+ifvg+ote  eq       1
+     H1    ifvg          fvg      1
+     H1    ifvg+ote      eq       1
+     HVN   bos+ifvg+ote  eq       1
+     LON   bos+ifvg+ote  eq       1
+     PD    ifvg          breaker  1
+     POC   bos+ifvg+ote  eq       1
+     POC   ifvg+ote      eq       1
+   fills, per day: 2026-02-20 S ASIA_H ifvg@09:50 eq@09:55 24904.75; 2026-02-23 S HVN_4 bos+ifvg+ote@09:40 eq@09:50 24959.50; 2026-03-04 S LON_H bos+ifvg+ote@09:40 eq@09:50 24905.50; 2026-03-06 L H4_SL ifvg@10:00 eq@10:05 24693.00; 2026-03-09 L H1_SL ifvg@09:45 eq@09:50 24362.00; 2026-03-10 S PDH ifvg@09:35 eq@09:50 25046.25; 2026-03-11 S HVN_6 ifvg@09:50 eq@09:55 25056.25; 2026-04-01 S H1_SH ifvg@09:45 eq@09:50 24122.88; 2026-04-07 L ASIA_L ifvg@09:50 eq@09:55 24176.25; 2026-04-22 L HVN_2 ifvg@09:40 eq@09:50 26838.00; 2026-04-23 L POC_PREV bos+ifvg+ote@09:35 eq@10:00 27007.88; 2026-04-27 L ASIA_L ifvg@09:55 eq@10:05 27369.12; 2026-04-30 L H4_SL ifvg@09:45 eq@09:50 27318.12; 2026-05-04 S POC_PREV ifvg@09:35 eq@09:50 27868.00; 2026-05-07 S ASIA_H ifvg+ote@09:45 eq@09:50 28745.25; 2026-05-11 S ASIA_H ifvg@09:45 eq@09:50 29379.62; 2026-05-12 L H1_SL ifvg+ote@09:35 eq@09:50 29188.75; 2026-05-15 L LON_L ifvg+ote@09:50 eq@09:55 29181.75; 2026-05-19 S POC_PREV ifvg@09:45 eq@09:50 28956.50; 2026-06-12 L ASIA_L ifvg@09:35 eq@09:50 29299.75; 2026-06-15 S H1_SH ifvg@09:55 fvg@10:05 30761.75; 2026-06-16 L ASIA_L ifvg@09:40 breaker@10:00 30798.00; 2026-06-17 L HVN_6 ifvg@09:45 eq@09:50 30452.50; 2026-06-19 S HVN_6 ifvg@09:40 eq@09:50 30671.00; 2026-06-22 S H1_SH bos+ifvg+ote@09:40 eq@09:50 30880.25; 2026-06-24 L PDL ifvg@09:50 eq@09:55 29676.12; 2026-06-26 L PDL ifvg@09:45 eq@09:50 29267.25; 2026-07-06 S PDH ifvg@09:50 breaker@10:00 29944.75; 2026-07-07 L HVN_6 ifvg@09:40 eq@09:50 29511.00; 2026-07-08 S HVN_1 ifvg@09:50 eq@09:55 29343.38; 2026-07-10 S POC_PREV ifvg@09:40 eq@09:50 29940.75; 2026-07-13 L ASIA_L ifvg@09:55 eq@10:00 29587.88; 2026-07-22 S LON_H ifvg@09:50 eq@09:55 29236.50; 2026-07-23 L H4_SL ifvg@09:35 eq@09:50 28737.25; 2026-07-24 L LON_L ifvg@09:35 eq@09:50 28500.00; 2026-08-10 L POC_PREV ifvg+ote@09:45 eq@09:50 29773.38; 2026-08-14 L LON_L ifvg+ote@09:40 eq@09:55 30216.00; 2026-08-25 S HVN_5 ifvg@09:40 eq@09:50 29393.00; 2026-08-26 S HVN_3 ifvg@09:45 eq@09:50 29269.25; 2026-08-28 S H4_SH ifvg@09:50 eq@09:55 29664.12; 2026-09-04 S ASIA_H ifvg@09:40 breaker@09:50 29634.50
+
+3b. sensitivity: ifvg counted only on a fresh inversion (everything else as above)
+   sessions 149 -> sweeps 78 -> confirmations 49 -> zones in discount/premium 49 -> fills 20
+   confirmations by type, on the confirmation bar: bos:17  ifvg:38  ote:30   combos: ifvg:19  bos+ifvg+ote:12  ifvg+ote:7  ote:6  bos+ote:5
+   confirmations by type, any bar by 10:05:       bos:25  ifvg:45  ote:33
+   zones used: fvg:7  eq:42  ob:0  breaker:0   fills by zone used: fvg:1  eq:19  ob:0  breaker:0   fills by level type: ASIA:3  LON:3  PD:1  H1:4  H4:4  POC:2  HVN:3
+
+4. side-by-side with round 1 (DESIGN-tjr-intraday.md section 9, base variant)
+   stage           round 1   wide   delta      x
+   sweeps               93     78     -15   0.84
+   confirmations        50     66     +16   1.32
+   zones                34     66     +32   1.94
+   fills                 7     41     +34   5.86
+   widened most: fills (5.86x round 1)
+   stage-to-stage conversion, round 1 vs wide: sweeps->confirmations 0.54/0.85  confirmations->zones 0.68/1.00  zones->fills 0.21/0.62
+   with fresh-ifvg only:  sweeps 78 (0.84x)  confirmations 49 (0.98x)  zones 49 (1.44x)  fills 20 (2.86x)
+
+   day-level rows written: results\tjr_intraday\part2_funnel_days_NQ.csv (149 rows)
+
+=== ES  data/ES_5min_tv.csv  41067 bars  2026-02-15 23:00:00 .. 2026-09-11 20:55:00 UTC ===
+
+1. levels at 09:25
+   sessions with a sweep-window bar: 149   (with a bar stamped exactly 09:30: 149)
+   present: ASIA_H:149  ASIA_L:149  LON_H:149  LON_L:149  PDH:148  PDL:148  H1_SH:145  H1_SL:149  H4_SH:135  H4_SL:146  POC_PREV:148  HVN(any):148
+   HVN count per day: 0:1  1:1  2:1  3:5  4:26  5:15  6:100
+   composite depth per day (sessions in the profile): 20:129  19:1  18:1  17:1  16:1  15:1  14:1  13:1  12:1  11:1  10:1  9:1  8:1  7:1  6:1  5:1  4:1  3:1  2:1  1:1  0:1
+   POC_PREV absent on: ['2026-02-16']   (first session in the file has no previous session)
+
+2. funnel
+   sessions 149 -> sweeps 95 -> confirmations 76 -> zones in discount/premium 76 -> fills 51
+   zones excluding the eq touch (which is always in discount by construction): 41
+   sweep-window bars skipped as ambiguous (a low and a high in one wick): 169 bars on 76 days
+   sweep days with no admissible opposing 5-minute swing (bos/ote cannot fire): 0
+   sweep days whose pre-sweep swing sits on the wrong side of the sweep extreme (degenerate leg): 0
+   sweeps by side: long 51  short 44
+   cross-check, this code with round 1's six levels only: sweeps 97; sweep day, bar, side and level identical to tjr_intraday.day_log: yes
+   six-level sweep days lost under the wide set: 21 (of which by the ambiguity rule: 21); days swept only under the wide set: 19; swept under both: 76 (same side 60, same bar 48)
+   ifvg on the confirmation bar: 76; resting on a FRESH inversion (no bar closed through the gap between its completion and the sweep bar): 25; on already-inverted gaps only: 51
+   sweep bar: 09:30:33  09:35:23  09:40:25  09:45:14
+   confirmation bar: 09:35:16  09:40:20  09:45:15  09:50:12  09:55:6  10:00:6  10:05:1
+
+3. breakdowns
+   sweeps by level type, every breached level counted:  ASIA:61  LON:59  PD:34  H1:88  H4:49  POC:12  HVN:40   (levels per sweep bar: 3.61)
+   sweeps by level type, deepest level (the setup's):   ASIA:12  LON:25  PD:9  H1:15  H4:15  POC:3  HVN:16
+     by name, every breached:  H1_SL:49  H1_SH:39  ASIA_H:33  LON_L:30  LON_H:29  ASIA_L:28  H4_SL:27  H4_SH:22  HVN_1:20  PDH:17  PDL:17  POC_PREV:12  HVN_2:8  HVN_3:4  HVN_5:4  HVN_4:2  HVN_6:2
+     by name, deepest:         LON_H:16  H4_SL:12  H1_SL:11  LON_L:9  ASIA_H:7  HVN_1:6  ASIA_L:5  HVN_2:5  PDH:5  H1_SH:4  PDL:4  H4_SH:3  HVN_5:3  POC_PREV:3  HVN_3:1  HVN_6:1
+   sweep days where NO round-1 level was breached (the wide levels alone made the sweep): 16
+   confirmations by type, on the confirmation bar:  bos:14  ifvg:76  ote:22   combos: ifvg:54  bos+ifvg+ote:14  ifvg+ote:8
+   confirmations by type, any bar by 10:05:        bos:34  ifvg:76  ote:40
+   confirmations, first-to-fire ONLY that type:    bos:0  ifvg:54  ote:0
+   zones by type, any qualifying (in discount/premium): fvg:6  eq:76  ob:14  breaker:27
+   zones by type, the one used (freshest at the end or at the fill): fvg:4  eq:64  ob:0  breaker:8
+   fills by (level type, confirmation types, zone used):
+     LON   ifvg          eq       11
+     H1    ifvg          eq       6
+     HVN   ifvg          eq       6
+     ASIA  ifvg          eq       4
+     H4    ifvg          eq       4
+     PD    bos+ifvg+ote  eq       3
+     H4    ifvg+ote      eq       2
+     LON   bos+ifvg+ote  breaker  2
+     PD    ifvg          eq       2
+     ASIA  ifvg          breaker  1
+     H1    bos+ifvg+ote  breaker  1
+     H1    bos+ifvg+ote  eq       1
+     HVN   bos+ifvg+ote  eq       1
+     HVN   ifvg          breaker  1
+     LON   bos+ifvg+ote  eq       1
+     LON   ifvg          breaker  1
+     LON   ifvg+ote      eq       1
+     POC   ifvg          breaker  1
+     POC   ifvg          eq       1
+     POC   ifvg+ote      eq       1
+   fills, per day: 2026-03-02 S ASIA_H ifvg@09:50 eq@09:55 6849.75; 2026-03-04 S LON_H bos+ifvg+ote@09:35 breaker@10:00 6845.50; 2026-03-05 S HVN_1 ifvg@09:40 eq@09:50 6856.00; 2026-03-11 S H1_SH ifvg@09:35 eq@09:55 6796.12; 2026-03-12 L H1_SL ifvg@09:35 eq@09:50 6717.25; 2026-04-01 S ASIA_H ifvg@09:40 breaker@09:50 6614.25; 2026-04-06 S ASIA_H ifvg@09:45 eq@09:50 6634.25; 2026-04-15 S LON_H ifvg@09:45 eq@09:55 7014.38; 2026-04-22 S ASIA_H ifvg@09:35 eq@09:50 7146.50; 2026-04-23 L H1_SL bos+ifvg+ote@09:35 breaker@10:00 7152.75; 2026-04-24 L H1_SL ifvg@09:40 eq@09:50 7155.62; 2026-04-30 L H4_SL ifvg@09:45 eq@09:50 7175.88; 2026-05-07 S PDH bos+ifvg+ote@09:35 eq@10:05 7395.62; 2026-05-12 L LON_L ifvg@09:40 eq@09:50 7402.75; 2026-05-14 S LON_H ifvg@09:55 eq@10:00 7493.12; 2026-05-15 L H1_SL ifvg@09:45 eq@09:50 7437.25; 2026-05-18 L HVN_1 bos+ifvg+ote@09:50 eq@10:00 7432.25; 2026-05-19 L LON_L ifvg@09:50 eq@10:00 7389.75; 2026-05-20 S HVN_2 ifvg@09:50 eq@09:55 7400.88; 2026-05-26 L LON_L ifvg@09:40 eq@09:50 7532.88; 2026-05-28 L HVN_2 ifvg@09:45 eq@09:50 7527.25; 2026-06-01 L H4_SL ifvg@09:35 eq@09:55 7585.50; 2026-06-04 S LON_H ifvg+ote@09:40 eq@09:50 7554.25; 2026-06-08 S LON_H bos+ifvg+ote@09:35 eq@09:50 7454.12; 2026-06-10 S HVN_1 ifvg@09:50 breaker@09:55 7382.25; 2026-06-12 L LON_L ifvg@09:55 eq@10:00 7383.25; 2026-06-16 S LON_H ifvg@09:40 eq@09:50 7633.50; 2026-06-17 L H1_SL bos+ifvg+ote@09:40 eq@09:55 7591.38; 2026-06-18 L HVN_6 ifvg@09:50 eq@09:55 7543.00; 2026-06-19 S LON_H ifvg@09:35 eq@09:50 7559.75; 2026-06-24 S LON_H bos+ifvg+ote@09:40 breaker@09:50 7458.50; 2026-06-26 L H4_SL ifvg@09:45 eq@09:50 7378.75; 2026-06-30 S PDH ifvg@09:35 eq@09:50 7507.00; 2026-07-07 L LON_L ifvg@09:40 eq@09:50 7574.50; 2026-07-13 S LON_H ifvg@09:40 eq@09:55 7602.25; 2026-07-15 S PDH bos+ifvg+ote@09:45 eq@09:55 7611.00; 2026-07-21 L HVN_2 ifvg@09:50 eq@09:55 7510.38; 2026-07-22 S H4_SH ifvg@09:45 eq@09:50 7539.25; 2026-07-24 S H4_SH ifvg+ote@09:40 eq@09:50 7456.75; 2026-07-28 L LON_L ifvg@09:45 breaker@09:50 7428.75; 2026-08-07 S LON_H ifvg@09:55 eq@10:00 7758.00; 2026-08-11 L POC_PREV ifvg@09:40 breaker@09:50 7774.50; 2026-08-14 L POC_PREV ifvg@09:40 eq@09:50 7822.00; 2026-08-18 L H1_SL ifvg@09:40 eq@09:50 7724.50; 2026-08-20 L PDL bos+ifvg+ote@09:35 eq@09:50 7706.62; 2026-08-26 S HVN_1 ifvg@09:45 eq@09:50 7692.62; 2026-08-28 S PDH ifvg@09:50 eq@09:55 7751.50; 2026-09-02 L POC_PREV ifvg+ote@09:40 eq@09:50 7647.00; 2026-09-07 S H1_SH ifvg@09:35 eq@09:50 7714.75; 2026-09-08 L ASIA_L ifvg@09:55 eq@10:00 7695.00; 2026-09-09 L H4_SL ifvg+ote@09:35 eq@09:50 7657.75
+
+3b. sensitivity: ifvg counted only on a fresh inversion (everything else as above)
+   sessions 149 -> sweeps 95 -> confirmations 53 -> zones in discount/premium 53 -> fills 26
+   confirmations by type, on the confirmation bar: bos:18  ifvg:35  ote:31   combos: ifvg:22  bos+ifvg+ote:9  bos+ote:9  ote:9  ifvg+ote:4
+   confirmations by type, any bar by 10:05:       bos:34  ifvg:40  ote:40
+   zones used: fvg:6  eq:44  ob:0  breaker:3   fills by zone used: fvg:2  eq:21  ob:0  breaker:3   fills by level type: ASIA:1  LON:9  PD:4  H1:5  H4:3  POC:2  HVN:2
+
+4. side-by-side with round 1 (DESIGN-tjr-intraday.md section 9, base variant)
+   stage           round 1   wide   delta      x
+   sweeps               97     95      -2   0.98
+   confirmations        46     76     +30   1.65
+   zones                24     76     +52   3.17
+   fills                 1     51     +50  51.00
+   widened most: fills (51.00x round 1)
+   stage-to-stage conversion, round 1 vs wide: sweeps->confirmations 0.47/0.80  confirmations->zones 0.52/1.00  zones->fills 0.04/0.67
+   with fresh-ifvg only:  sweeps 95 (0.98x)  confirmations 53 (1.15x)  zones 53 (2.21x)  fills 26 (26.00x)
+
+   day-level rows written: results\tjr_intraday\part2_funnel_days_ES.csv (149 rows)
+
+5. causality proof: NQ
+   cut at bar 416 (2026-02-17 14:40:00 UTC): 2026-02-17 cut before the 09:40 bar (inside the sweep window: the sweep is not yet in the frame)
+     earlier days: 1 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'no_fill' -> truncated 'no_sweep'  (sweep 09:40 conf 09:45 fill -)
+   cut at bar 189 (2026-02-16 14:45:00 UTC): 2026-02-16 cut before the 09:45 bar (inside the sweep window: sweep in, confirmation not yet)
+     earlier days: 0 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'no_fill' -> truncated 'no_confirmation'  (sweep 09:30 conf 09:50 fill -)
+   cut at bar 23464 (2026-06-15 14:05:00 UTC): 2026-06-15 cut before the 10:05 bar (inside the entry window: cut at the fill bar, the fill must vanish)
+     earlier days: 84 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'filled' -> truncated 'no_fill'  (sweep 09:35 conf 09:55 fill 10:05)
+   cut at bar 971 (2026-02-19 14:55:00 UTC): 2026-02-19 cut before the 09:55 bar (inside the entry window: confirmation in, zones may still be forming)
+     earlier days: 3 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'no_fill' -> truncated 'no_fill'  (sweep 09:35 conf 09:50 fill -)
+   cut at bar 39687 (2026-09-04 17:00:00 UTC): 2026-09-04 cut before the 13:00 bar (mid-afternoon on a filled day)
+     earlier days: 143 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'filled' -> truncated 'filled'  (sweep 09:35 conf 09:40 fill 09:50)
+   cut at bar 732 (2026-02-18 18:00:00 UTC): 2026-02-18 cut before the 13:00 bar (mid-afternoon on a day with no sweep)
+     earlier days: 2 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'no_sweep' -> truncated 'no_sweep'  (sweep - conf - fill -)
+   result: all six cuts reproduce the full run
+
+5. causality proof: ES
+   cut at bar 1520 (2026-02-23 14:40:00 UTC): 2026-02-23 cut before the 09:40 bar (inside the sweep window: the sweep is not yet in the frame)
+     earlier days: 5 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'no_fill' -> truncated 'no_sweep'  (sweep 09:40 conf 09:45 fill -)
+   cut at bar 189 (2026-02-16 14:45:00 UTC): 2026-02-16 cut before the 09:45 bar (inside the sweep window: sweep in, confirmation not yet)
+     earlier days: 0 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'no_fill' -> truncated 'no_confirmation'  (sweep 09:30 conf 09:50 fill -)
+   cut at bar 23187 (2026-06-12 14:00:00 UTC): 2026-06-12 cut before the 10:00 bar (inside the entry window: cut at the fill bar, the fill must vanish)
+     earlier days: 83 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'filled' -> truncated 'no_fill'  (sweep 09:40 conf 09:55 fill 10:00)
+   cut at bar 6491 (2026-03-19 13:55:00 UTC): 2026-03-19 cut before the 09:55 bar (inside the entry window: confirmation in, zones may still be forming)
+     earlier days: 23 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'no_fill' -> truncated 'no_fill'  (sweep 09:30 conf 09:40 fill -)
+   cut at bar 40467 (2026-09-09 17:00:00 UTC): 2026-09-09 cut before the 13:00 bar (mid-afternoon on a filled day)
+     earlier days: 146 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'filled' -> truncated 'filled'  (sweep 09:30 conf 09:35 fill 09:50)
+   cut at bar 456 (2026-02-17 18:00:00 UTC): 2026-02-17 cut before the 13:00 bar (mid-afternoon on a day with no sweep)
+     earlier days: 1 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'no_sweep' -> truncated 'no_sweep'  (sweep - conf - fill -)
+   result: all six cuts reproduce the full run
+
+6. synthetic daily data (quantlab.data.synthetic): the no-09:30 path
+   clock is None: True; rows: 0 -> all-flat, no exception
+
+summary
+   NQ: sessions 149 -> sweeps 78 -> confirmations 66 -> zones 66 -> fills 41   causality: ok
+   NQ (fresh-ifvg sensitivity): sessions 149 -> sweeps 78 -> confirmations 49 -> zones 49 -> fills 20
+   ES: sessions 149 -> sweeps 95 -> confirmations 76 -> zones 76 -> fills 51   causality: ok
+   ES (fresh-ifvg sensitivity): sessions 149 -> sweeps 95 -> confirmations 53 -> zones 53 -> fills 26

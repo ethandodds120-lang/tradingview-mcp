@@ -104,6 +104,169 @@ space that §3 inherits, and §5's deflation is what pays for it.
 Primitives that are general — volume profile, POC, HVN, order block, breaker
 — go in `primitives.py`. T-8 reuses them.
 
+### 2.1 Definitions as built (Part 2, 2026-09-12)
+
+Written back by the funnel build — `tjr_wide_funnel.py`, the general
+primitives in `primitives.py` (`resample_context`, `volume_profile`, `vwap`,
+`poc`, `hvn`, `order_block`, `breaker_block`). Where §2 above left a choice,
+this is the choice; the numbers in `results/tjr_intraday/part2_wide_funnel.txt`
+and the day-level `part2_funnel_days_{NQ,ES}.csv` are under these definitions.
+
+**Levels — every one frozen at the 09:25 bar's close** (the last bar of D
+before the sweep window) from bars ≤ that bar:
+
+| item | as built |
+|---|---|
+| resampled bins | `resample_context(df, 60 / 240)`: bins on the New York wall clock anchored at 18:00 ET, labelled by nominal open time in tz-naive UTC. A bin exists at 5-minute bar *i* once its last slot, by minute arithmetic, is ≤ *i* — never by looking at the next row. The last bin of a session is **clipped at the 17:00 close** (the 14:00 4-hour bin runs 14:00–16:55 and completes at the 16:55 bar; 1-hour bins complete at :55, 23 a session). A bin whose last slot never prints (a CME early close) never completes at its own time — `last` skips it — but it **stays a bar of the resampled series**, readable once the next bin completes, and a swing may pivot on it (the bar a chart shows; causal, since at any input bar the readable bins are the same whether the frame is cut there or runs on). On the TradingView files: one 1-hour bin (2026-04-03) and six 4-hour bins (02-16, 04-03, 05-25, 06-19, 07-03, 09-07). Dropping them instead would move H4_SH on 7 days and no funnel number (reviewer's check). An earlier draft of this row said "never a bar"; corrected 2026-09-12. Empty bins do not exist. |
+| `H1_SH/SL`, `H4_SH/SL` | `confirmed_swings(left=2, right=2)` on each resampled series; a swing is admissible at bar *i* iff `confirmed_at <= ctx.last[i]`, the newest *completed* bin. `*_SH` = the admissible swing high nearest **in price** above the 09:25 close, `*_SL` the nearest below; none → absent for the day (H4_SH absent on 15 NQ / 14 ES days). §2's "most recent" was read as nearest in price, the same sense the HVN naming uses. |
+| volume profile | `volume_profile`: each bar's volume spread uniformly over the bins its [low, high] covers; bin width = tick 0.25 × `poc_bin_ticks` (default 4 → $1.00), grid anchored at multiples of the width so sessions line up bin for bin. Level prices are bin **centres** (x.50). |
+| `POC_PREV` | POC of the previous session in the frame (its 18:00 (D−2) … 16:55 (D−1) bars): the bin with the most volume, ties → the bin nearest the session's VWAP (typical price (h+l+c)/3, volume-weighted). Absent on the first session of the file, present on the other 148. **"Previous session" is the previous clock day, whatever its length.** The frame has 150 clock days; 149 have a sweep-window bar. The 150th is 2026-04-03 (Good Friday): 183 bars, last stamp 09:10, 42k contracts against ~566k on a normal day. It has no sweep window and no funnel row, but it is 04-06's previous session — its PDH / PDL (24255 / 24106, as in round 1) and its POC_PREV come from those 183 bars — and it is one of the composite's 20 sessions from 04-06 through 05-01. The five 12:55 early closes (02-16, 05-25, 06-19, 07-03, 09-07) are ordinary sessions for every purpose here. Flagged by review; kept as the literal definition (a trader on 04-06 reads Friday's profile, thin as it is). |
+| `HVN_1..6` | the composite is the last **20 completed sessions before D**, summed bin for bin (fewer on the first twenty days; the depth is reported per day). Smoothed with a centred 5-bin moving average on the **price** axis — a profile of past bars, not a window on time, so not lookahead; at the grid ends the mean is over the bins covered. Nodes = local maxima (`>=` the bin below, `>` the bin above, so a plateau gives one node) whose smoothed volume ≥ `hvn_frac` (0.5) × the smoothed maximum; at most `hvn_max` (6), named HVN_1.. nearest to the 09:25 close first. NQ yields six on every day; ES four to six on most. |
+| which side | ASIA/LON/PD/H1/H4 by name. `POC_PREV` and `HVN_*` rest on the side of the 09:25 close: ≤ the close → a low (a long's target), > the close → a high. |
+
+**Sweep** — round 1's test (`tjr_intraday.sweep_of_levels`) against the union
+of the day's levels: wick through, close back inside; several lows in one wick →
+the **lowest** is the setup's level, several highs → the highest; a wick through
+a low *and* a high is ambiguous and skipped, and the next bar in the window may
+still sweep; the first qualifying bar fixes the direction. Every level the sweep
+bar breached is recorded alongside the deepest. With up to seventeen levels the
+ambiguity rule bites: 29 (NQ) / 21 (ES) of round 1's sweep days are lost to it,
+14 / 19 days sweep only under the wide set. Restricted to the six round-1 levels
+the same code reproduces round 1's 93 / 97 sweeps day for day, bar for bar (the
+printout checks this against `tjr_intraday.day_log`).
+
+**Confirmations** — on a bar strictly after the sweep bar, stamped ≤ 10:05:
+
+| | long definition as built |
+|---|---|
+| `bos` | close > the most recent confirmed 5-minute opposing swing (left=right=2) admissible at the sweep bar (`confirmed_at <= sweep_idx`), frozen there — round 1's level |
+| `ifvg` | close > `gap.high` of a bearish 5-minute FVG completed on day D (any bar from 18:00 D−1) at or before this bar. **As written this admits a gap that a bar had already closed through before the sweep**, so it fires on the first bar after most sweeps: on 65 of 66 (NQ) and 76 of 76 (ES) confirmation bars, of which only 26 / 25 rest on a gap first closed through *after* the sweep bar. The printout carries a "fresh inversion only" sensitivity (NQ 49 confirmations → 20 fills, ES 53 → 26) and the CSV flags each confirmation bar |
+| `ote` | close > extreme + 0.79 × (pre-sweep swing high − extreme), the swing being `bos`'s; no admissible swing → neither `bos` nor `ote` (never happened). Implemented literally: a swing on the wrong side of the extreme (one NQ day) is not guarded against |
+
+The first bar on which any fires is the confirmation bar; the types on it, and
+every type that fires on any bar by 10:05, are both recorded.
+
+**Dealing range** at confirmation: [sweep extreme, highest high from the sweep
+bar through the confirmation bar] (shorts mirror). EQ = midpoint; discount =
+zone.high ≤ EQ, premium = zone.low ≥ EQ.
+
+**Zones** — each must be in discount / premium:
+
+| | long definition as built | freshness stamp |
+|---|---|---|
+| `fvg` | bullish 5-minute FVG completed at *k*, sweep_idx+2 ≤ *k* ≤ confirmation bar, or later inside the entry window | *k* |
+| `eq` | [EQ, EQ], touched when low ≤ EQ. In discount by construction, so **the zone stage equals the confirmation stage**; the printout also reports the count without it (NQ 30, ES 41) | the confirmation bar |
+| `ob` | `order_block`: the last bearish candle (close < open) with index ≤ sweep_idx, no lower bound; [low, high] | its candle |
+| `breaker` | `breaker_block`: for a confirmed 5-minute swing high of day D before the sweep (confirmed by the bar being read), the last close > open candle strictly before the swing bar and on or after the day start, once a bar *j* ≥ sweep_idx has closed above its high (the sweep bar itself counts, as round 1's inversion did); several → the most recently violated; [low, high] | *j* |
+
+The setup uses the freshest stamp; on the same bar, fvg over breaker over eq
+over ob. A zone's bar for the fill rule is the bar it became knowable on — the
+later of its stamp, the confirmation bar and, for a breaker, the bar its swing
+confirmed on. Because `eq` is stamped at the confirmation bar it outranks every
+leg gap, order block and earlier breaker; only a gap or violation on or after
+the confirmation bar displaces it (zone used: eq 57 of 66 NQ, 64 of 76 ES; ob
+never).
+
+**Fill** — an entry-window bar (09:50–10:05 stamps) strictly after both the
+confirmation bar and the zone's bar, low ≤ zone.high (long); entry =
+min(zone.high, open). One setup a day, first valid by time. Fills are counted;
+no stop, target or exit exists in the funnel.
+
+**Causality.** Truncating each frame at six mid-session bars (inside the sweep
+window, inside the entry window, mid-afternoon) reproduces every earlier day's
+row and the cut day's row as of the cut, on both instruments; daily synthetic
+data (no 09:30 bar) is all-flat with no exception. Both are in the printout.
+
+**Not built here, deliberately:** no SMT, no pair columns, nothing registered,
+no trial counted.
+
+### 2.2 Part 2 findings (2026-09-12, 149 sessions each, no outcomes measured)
+
+Two adversarial reviews: one not refuted (four low notes, all intrabar-order or
+definitional, none moving a number); one refuted on the *recorded* definition
+of two items — never-completed resample bins, and the Good Friday session —
+which are corrected in §2.1 above. The funnel numbers are unchanged by either.
+Causality: the script's six cuts per instrument reproduce the full run, and
+both reviewers' own truncations did the same. Printout: `results/tjr_intraday/part2_wide_funnel.txt`;
+day-level rows: `part2_funnel_days_{NQ,ES}.csv`.
+
+**The funnel, round 1 beside the wide spec, and beside the wide spec with the
+one obvious degeneracy removed (`ifvg` counted only on a fresh inversion):**
+
+| stage | NQ r1 | NQ wide | NQ wide, fresh ifvg | ES r1 | ES wide | ES wide, fresh ifvg |
+|---|---|---|---|---|---|---|
+| sessions | 149 | 149 | 149 | 149 | 149 | 149 |
+| sweeps | 93 | **78** | 78 | 97 | 95 | 95 |
+| confirmations | 50 | 66 | 49 | 46 | 76 | 53 |
+| zones in discount | 34 | 66 | 49 | 24 | 76 | 53 |
+| fills | **7** | **41** | **20** | **1** | **51** | **26** |
+
+**Where it widened, stage by stage.**
+
+1. **Sweeps went down on NQ and flat on ES.** Two effects pull against each
+   other. The new levels alone made sweeps on 8 (NQ) and 16 (ES) days that
+   round 1 had no level for. But with fifteen to seventeen levels on the board
+   — 4.9 breached per NQ sweep bar — the opening bars straddle a high *and* a
+   low far more often, and §2's ambiguity rule threw out 226 sweep-window bars
+   on 100 NQ days, removing 29 of round 1's 93 sweep days (21 of 97 on ES).
+   Every level type is the deepest level on some days; among the new ones HVN,
+   H1 and H4 are the largest sources (NQ 15 / 12 / 8 days, ES 16 / 15 / 15).
+2. **Confirmation is where the literal spec stops filtering.** `ifvg` fires on
+   the confirmation bar on 65 of 66 NQ setups and 76 of 76 ES. Read literally
+   — a close above any bearish gap of day D completed at or before this bar —
+   it counts gaps price closed through hours before the sweep, so the first
+   bar after almost any sweep "confirms". One hand-checked case (NQ 03-09)
+   confirmed on a close *lower* than the sweep bar's close. `bos` fires by
+   10:05 on 25 / 34 days and `ote` on 33 / 40; neither is ever the sole
+   first-to-fire because `ifvg` has already fired. Requiring a **fresh**
+   inversion (no close through the gap between its completion and the sweep)
+   cuts confirmations to 49 / 53.
+3. **The `eq` zone cannot fail.** The 50% level sits in discount by
+   construction, so the zone stage equals the confirmation stage on every day
+   (66 = 66, 76 = 76), and `eq` is the zone used on 57 of 66 NQ and 64 of 76
+   ES setups. Excluding it, zones in discount are 30 / 41. `ob` qualifies on
+   12 / 14 days and is never used (always staler than `eq`); `breaker`
+   qualifies on 16 / 27 and is used on 4 / 8; a leg `fvg` exists on 5 / 6.
+4. **Fills follow.** The midpoint of a two-to-three-bar dealing range is
+   touched inside the entry window most of the time. Of the 41 NQ fills, 28
+   are (some level, `ifvg` alone, `eq`); of 51 ES, 34.
+
+**The answer to the question.** The narrow reading did not starve the test at
+the sweep — it starved it at confirmation → zone → fill, where round 1 asked
+for a break of structure and a gap-shaped zone in discount. The wide reading
+produces roughly three to six times the fills per instrument even after the
+`ifvg` degeneracy is removed (20 and 26 against 7 and 1). But the bulk of the
+literal spec's extra fills arrive through two definitions that barely filter:
+an already-inverted gap as "confirmation", and a midpoint that is in discount
+by construction as a "zone". Whether the extra fills are more of the same is an
+outcome question, and Part 2 measures no outcomes, by design. That is T-7's.
+
+**Three definitions T-7 must settle before trade one** — flagged, not changed;
+§5 is the pre-registration and §2 is his spec, so these are the user's calls:
+
+- `ifvg` as confirmation: **fresh inversion only** is the recommendation. The
+  literal reading is not a confirmation of anything.
+- `eq` as a zone: as specified it never fails the discount rule and is always
+  the freshest. Keep it as his definition and accept that "zone" then filters
+  nothing, or require the touch to come on a completed bar after a pullback
+  (i.e. price must first leave the midpoint), or pair it with a second zone
+  type. Any of the three is defensible; the funnel cannot choose.
+- the ambiguity rule against sixteen levels: as specified it removes more
+  round-1 sweeps than the new levels add. Options: judge ambiguity within a
+  level class (an HVN low and an H1 high in one wick is not the round-1
+  ambiguity), or keep POC/HVN as *targets* only and not as sweep levels.
+
+**Branch space, realised.** The 7 × 3 × 4 = 84 combinations collapse in
+practice: (any level, `ifvg` alone, `eq`) is about two-thirds of fills. §5's deflation count
+of nine stands; it was set before this and is not raised by it.
+
+**Levels at 09:25.** H4 swing highs are absent on 15 NQ / 14 ES days (no
+admissible 4-hour pivot above the close), H1 swing highs on 7 / 4, H4 lows on
+3 / 3, H1 lows on 2 / 0; the session, PD, POC and HVN levels are present on
+148 or 149. NQ's 20-session composite yields six HVNs on 148 days; ES's is
+flatter (six on 100 days, three to five on 46), so HVN is a thinner level set
+on ES.
+
 ## 3. Part 3 — `tjr_human` (T-7)
 
 ### 3.1 Signal layer
