@@ -1,3 +1,6 @@
+# SUPERSEDED by quantlab-tick.timer — kept for reference only. deploy/migrate-to-tick.sh
+# disables and removes the installed copy. Do not install this file.
+#
 # One poll of the forward test. Fired by quantlab-poll.timer, not run directly.
 #
 # Type=oneshot rather than a long-lived process on purpose: poll_forever() writes

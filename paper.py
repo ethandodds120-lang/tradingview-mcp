@@ -34,6 +34,7 @@ and they are sent to an Alpaca paper account instead — see quantlab/broker.py.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from datetime import date
 
@@ -43,8 +44,15 @@ from quantlab.strategies import REGISTRY
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 except (AttributeError, ValueError):
     pass
+
+# A run id becomes a systemd instance name (quantlab-poll@<id>.service) and a
+# directory under --dir. Letters, digits, dot, dash, underscore; no leading dot
+# (hidden dirs, and "." / ".."), no slashes, no spaces, nothing systemd would
+# need to escape, 64 chars at most.
+RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 BANNER = """
   SIMULATED FILLS. No order leaves this process. The record this writes is a
@@ -96,6 +104,19 @@ def broker_spec(args) -> dict | None:
             "fill_timeout": args.fill_timeout}
 
 
+def execution_spec(args, spec: dict, bspec: dict | None) -> dict:
+    """The `execution` block (DESIGN-execution.md §2). The style follows the
+    instrument: a crypto pair can be worked with a limit at any hour, an equity
+    decided after the close goes on the open. Simulated runs carry the block too —
+    the book multiplier applies to them, the routing fields just go unused."""
+    symbol = (bspec or {}).get("symbol") or spec.get("symbol") or spec.get("ticker") or ""
+    crypto = "/" in str(symbol)
+    style = args.exec_style or ("marketable_limit" if crypto else "market_on_open")
+    return {"route_at": args.route_at, "style": style,
+            "limit_bps": args.limit_bps, "limit_wait_s": args.limit_wait,
+            "fallback": "market", "book": not args.no_book}
+
+
 def banner_for(spec: dict | None) -> str:
     if not spec:
         return BANNER
@@ -120,6 +141,12 @@ def cmd_start(args) -> int:
     spec = feed_spec(args)
     bspec = broker_spec(args)
     run_id = args.id or default_id(args, spec)
+    if not RUN_ID_RE.match(run_id):
+        raise SystemExit(
+            f"bad run id {run_id!r}: it becomes the systemd instance name\n"
+            "quantlab-poll@<id>.service and a directory, so it must match\n"
+            f"{RUN_ID_RE.pattern} — letters, digits, '.', '-' and '_' only, starting\n"
+            "with a letter or digit, at most 64 characters. Pass --id to choose one.")
     overrides = {}
     for kv in args.param or []:
         key, _, val = kv.partition("=")
@@ -131,15 +158,19 @@ def cmd_start(args) -> int:
         except ValueError:
             overrides[key] = val
 
+    espec = execution_spec(args, spec, bspec)
     run = paper.PaperRun.create(
         args.dir, run_id, args.strategy, spec, params=overrides,
         cost_bps=args.cost_bps, vol_target=args.vol_target,
         start_equity=args.equity, min_history=args.min_history,
-        note=args.note or "", broker_spec=bspec)
+        note=args.note or "", broker_spec=bspec, execution=espec)
     print(banner_for(bspec))
     print(f"  created {run.root}")
     print(f"  strategy {args.strategy}  {run.config['params']}")
     print(f"  fingerprint {run.config['fingerprint']} — editing config.json breaks the run")
+    print(f"  execution route_at={espec['route_at']} style={espec['style']} "
+          f"limit {espec['limit_bps']} bps / {espec['limit_wait_s']:.0f}s  "
+          f"book {'on' if espec['book'] else 'off'}")
     if bspec:
         print(f"\n  account {run.config['broker_account']}  "
               f"equity {run.config['broker_equity_at_start']:,.2f} — "
@@ -157,8 +188,47 @@ def cmd_start(args) -> int:
 
 def cmd_poll(args) -> int:
     run = paper.PaperRun.load(args.dir, args.id)
-    result = run.poll()
+    result = run.poll(dry_run=args.dry_run)
+    if result.get("stopped"):
+        print(f"  {args.id} is STOPPED ({result.get('at')}: {result.get('reason')}) — "
+              "nothing done")
+        return 0
+    if args.dry_run:
+        print("  DRY RUN — nothing written, nothing sent\n")
     print(result)
+    return 0
+
+
+def cmd_stop(args) -> int:
+    """Leave the STOPPED marker. The tick, the book and poll skip the run from
+    here; its journal, bars and state are kept as they are."""
+    run = paper.PaperRun.load(args.dir, args.id)
+    if run.is_stopped:
+        print(f"  {args.id} is already stopped: {run._stopped_marker()}")
+        return 0
+    marker = run.stop(args.reason)
+    print(f"  stopped {args.id} at {marker['at']} — {marker['reason']}")
+    print(f"  marker {run.stopped_path}; run deploy/sync-tick.sh so the tick drops it")
+    return 0
+
+
+def cmd_backfill_execution(args) -> int:
+    """The §4 fields for the one routed fill made before they existed (§10).
+    Prints the record; --append is what writes it, and only once."""
+    import json
+
+    run = paper.PaperRun.load(args.dir, args.id)
+    try:
+        rec = run.backfill_execution()
+    except ValueError as exc:
+        print(f"\n  nothing to backfill: {exc}\n")
+        return 1
+    print(json.dumps(rec, indent=2, default=str))
+    if args.append:
+        run._journal(rec)
+        print(f"\n  appended to {run.journal_path}")
+    else:
+        print("\n  not written — pass --append to add it to the journal")
     return 0
 
 
@@ -176,7 +246,56 @@ def cmd_run(args) -> int:
 
 
 def cmd_report(args) -> int:
+    if getattr(args, "execution", False):
+        return cmd_report_execution(args)
     print(paper.PaperRun.load(args.dir, args.id).report())
+    return 0
+
+
+def cmd_report_execution(args) -> int:
+    """What every routed fill cost against the price the backtest assumed.
+
+    Each bps column is signed so that positive always means the run paid more
+    (buy) or received less (sell) — see DESIGN-execution.md §4. `total_bps` is
+    the whole gap between fill and bar open; `delay_bps` is the part that came
+    from sending late and `slippage_bps` the part the venue charged on top.
+    """
+    run = paper.PaperRun.load(args.dir, args.id)
+    frame = getattr(run, "execution_frame", None)
+    if frame is None:
+        print("\n  this build of quantlab.paper has no PaperRun.execution_frame() — "
+              "the execution fields (DESIGN-execution.md §4) are not recorded yet\n")
+        return 1
+    df = frame()
+    if df is None or df.empty:
+        print("\n  no routed fills with execution fields"
+              + ("" if run.routes_orders else " — this run simulates its fills") + "\n")
+        return 0
+
+    cols = ["delay_bps", "slippage_bps", "total_bps", "excess_bps",
+            "arrival_spread_bps", "lag_s"]
+    have = [c for c in cols if c in df.columns]
+    print(f"\n  {len(df)} routed fills — {run.journal_path}\n")
+    print(f"  {'':<20}{'mean':>10}{'median':>10}{'n':>6}")
+    for c in have:
+        s = df[c].astype(float).dropna()
+        if s.empty:
+            print(f"  {c:<20}{'-':>10}{'-':>10}{0:>6}")
+            continue
+        print(f"  {c:<20}{s.mean():>10.1f}{s.median():>10.1f}{len(s):>6}")
+    for c in cols:
+        if c not in df.columns:
+            print(f"  {c:<20}{'missing':>10}")
+
+    if "order_style" in df.columns:
+        print("\n  by order style\n")
+        by = df.groupby(df["order_style"].fillna("?"))
+        show = [c for c in ("delay_bps", "slippage_bps", "total_bps", "excess_bps")
+                if c in df.columns]
+        table = by[show].mean().round(1) if show else by.size().to_frame("n")
+        table.insert(0, "n", by.size())
+        print("   " + table.to_string().replace("\n", "\n   "))
+    print()
     return 0
 
 
@@ -332,6 +451,50 @@ def cmd_portfolio(args) -> int:
     return 0
 
 
+def cmd_book(args) -> int:
+    """The book governor: one multiplier k for every run, from the whole book's
+    vol. Reads only unless --write, which is what quantlab-book.service does on
+    every tick. `portfolio` above is the view; this is the number the runs use.
+    """
+    from quantlab import book
+
+    doc = book.compute_book(args.dir, window=args.window, vol_target=args.vol_target,
+                           cap=args.cap)
+    print()
+    print(book.format_book(doc))
+    if args.write:
+        path = book.write_book(args.dir, doc)
+        print(f"\n  wrote {path} and appended to {path.with_name(book.HISTORY_FILE).name}")
+    else:
+        print("\n  read-only — pass --write to publish this to the runs")
+    print()
+    return 0
+
+
+def cmd_tick_wants(args) -> int:
+    """The Wants= line for quantlab-tick.service: every run that is not stopped,
+    then the book. deploy/sync-tick.sh turns this into the systemd drop-in."""
+    from quantlab import book
+
+    runs, _ = book.active_runs(args.dir)
+    # `start` refuses ids that cannot be an instance name, but a directory can be
+    # copied in by hand. Leaving one out here is the whole check — sync-tick.sh
+    # writes this line verbatim — so be loud about it: the run exists, `list`
+    # shows it, and it will not be polled.
+    units = []
+    for run_id in runs:
+        if not RUN_ID_RE.match(run_id):
+            print(f"WARNING: {args.dir}/{run_id} is NOT a valid run id "
+                  f"({RUN_ID_RE.pattern}) and cannot be a systemd instance name — "
+                  f"it is left out of Wants= and will NOT be polled. Rename the "
+                  f"directory or stop the run.", file=sys.stderr)
+            continue
+        units.append(f"quantlab-poll@{run_id}.service")
+    units.append("quantlab-book.service")
+    print("Wants=" + " ".join(units))
+    return 0
+
+
 def cmd_unfilled(args) -> int:
     run = paper.PaperRun.load(args.dir, args.id)
     df = run.unfilled_frame()
@@ -477,11 +640,47 @@ def main() -> int:
                        help="seconds to wait for a fill before cancelling (default 90)")
     route.add_argument("--live", action="store_true",
                        help="route to the LIVE account instead of paper. Real money.")
+
+    execution = start.add_argument_group(
+        "execution",
+        "When and how a routed order goes out (DESIGN-execution.md §2). Legacy runs "
+        "have none of this; a new run records it in config.json, unfingerprinted.")
+    execution.add_argument("--route-at", choices=["decision", "next_close"],
+                           default="decision",
+                           help="send the order when the decision is made (default), "
+                                "or at the next bar's close as the legacy path did")
+    execution.add_argument("--exec-style",
+                           choices=["marketable_limit", "market", "market_on_open"],
+                           help="default: marketable_limit for a crypto pair, "
+                                "market_on_open for an equity")
+    execution.add_argument("--limit-bps", type=float, default=5.0,
+                           help="how far through the touch a marketable limit is priced")
+    execution.add_argument("--limit-wait", type=float, default=60.0,
+                           help="seconds to give the limit before it is cancelled and "
+                                "the remainder sent at market")
+    execution.add_argument("--no-book", action="store_true",
+                           help="ignore the book governor's multiplier for this run")
     start.set_defaults(func=cmd_start)
 
     poll = sub.add_parser("poll", help="one iteration, then exit")
     poll.add_argument("--id", required=True)
+    poll.add_argument("--dry-run", action="store_true",
+                      help="fetch and decide in memory, print what would happen, "
+                           "write nothing and send nothing")
     poll.set_defaults(func=cmd_poll)
+
+    stp = sub.add_parser("stop", help="leave a STOPPED marker so the tick skips the run")
+    stp.add_argument("--id", required=True)
+    stp.add_argument("--reason", required=True, help="why — it goes in the journal")
+    stp.set_defaults(func=cmd_stop)
+
+    bfe = sub.add_parser("backfill-execution",
+                         help="reconstruct the execution fields for a fill made before "
+                              "they were recorded")
+    bfe.add_argument("--id", required=True)
+    bfe.add_argument("--append", action="store_true",
+                     help="write the record to the journal (default: print only)")
+    bfe.set_defaults(func=cmd_backfill_execution)
 
     loop = sub.add_parser("run", help="poll on an interval until interrupted")
     loop.add_argument("--id", required=True)
@@ -491,6 +690,9 @@ def main() -> int:
 
     rep = sub.add_parser("report", help="where the run stands")
     rep.add_argument("--id", required=True)
+    rep.add_argument("--execution", action="store_true",
+                     help="what the routed fills cost against the bar open the "
+                          "backtest assumed: delay, slippage, total, per order style")
     rep.set_defaults(func=cmd_report)
 
     lst = sub.add_parser("list", help="all runs")
@@ -501,6 +703,22 @@ def main() -> int:
     pf.add_argument("--bars", type=int, default=400,
                     help="bars of history for the covariance estimate")
     pf.set_defaults(func=cmd_portfolio)
+
+    bk = sub.add_parser("book",
+                        help="the book governor — one vol multiplier for every run")
+    bk.add_argument("--write", action="store_true",
+                    help="publish book.json and append to book.jsonl (default: read-only)")
+    bk.add_argument("--window", type=int, default=60,
+                    help="native bars for the vol, joined days for the correlation")
+    bk.add_argument("--vol-target", type=float, default=0.15,
+                    help="annualised vol the whole book should run at")
+    bk.add_argument("--cap", type=float, default=1.0,
+                    help="k never exceeds this — the book only scales down")
+    bk.set_defaults(func=cmd_book)
+
+    tw = sub.add_parser("tick-wants",
+                        help="the systemd Wants= line for every run that is not stopped")
+    tw.set_defaults(func=cmd_tick_wants)
 
     fil = sub.add_parser("fills", help="the fill ledger — every paper trade")
     fil.add_argument("--id", required=True)

@@ -13,7 +13,7 @@ already answers. This document is only about the scaffolding.
 | pluggable execution | `quantlab/broker.py` `build()` | **partly.** The dispatch exists; there is exactly one real adapter. |
 | strategy registry + families | `quantlab/strategies/` | **done.** |
 | validation gauntlet | `quantlab/validate.py` | **done.** |
-| unattended execution | `deploy/` + systemd timer | **done for one run.** Needs templating for N. |
+| unattended execution | `deploy/` + one systemd tick | **done for N.** `quantlab-tick.timer` polls every non-stopped run, then sizes the book. |
 
 Two runs with different feeds and different brokers already coexist on disk. The
 data model is not the bottleneck.
@@ -151,15 +151,20 @@ the panel engine properly and test the family honestly, not a reason to trade it
 
 ## Infrastructure changes for N runs
 
-### 1. One systemd unit for all runs
+### 1. One systemd tick for all runs
 
-The current unit hardcodes the run id. Replace it with a template so one file
-serves every run — see `deploy/quantlab-poll@.service`:
+Done. One timer (`deploy/quantlab-tick.timer`) fires a no-op service whose
+generated `Wants=` drop-in pulls in `quantlab-poll@<id>.service` for every run
+without a `STOPPED` marker, then `quantlab-book.service` after them
+(`Before=` on the poll template). Adding a run is one command and a sync:
 
 ```bash
-systemctl enable --now quantlab-poll@sol-trend-20260906.timer
-systemctl enable --now quantlab-poll@qqq-tsmom-20260912.timer
+paper.py start --strategy tsmom --alpaca QQQ --id qqq-tsmom-20260912 && sudo deploy/sync-tick.sh
 ```
+
+`deploy/migrate-to-tick.sh` removes the per-run timers this section used to
+describe. The install, add-a-run and reboot-test procedures are in
+`deploy/README.md`.
 
 ### 2. Poll cadence per asset class
 

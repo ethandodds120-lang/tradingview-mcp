@@ -1,3 +1,6 @@
+# SUPERSEDED by quantlab-tick.timer — kept for reference only. deploy/migrate-to-tick.sh
+# disables and removes the installed copy. Do not install this file.
+#
 # Hourly, not once a day at the close.
 #
 # The SOL/USD daily bar closes at 17:00 Pacific and that is the only moment this

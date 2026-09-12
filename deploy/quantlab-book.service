@@ -1,0 +1,28 @@
+# Size the book. Runs once per tick, after every poll (each quantlab-poll@
+# instance is Before= this unit), and writes paper_runs/book.json — the one
+# multiplier every run applies to its next target — plus a line of history in
+# paper_runs/book.jsonl.
+#
+# It reads only bars.csv and state.json, so it needs no network of its own; the
+# After=network-online.target is so it never orders itself ahead of the polls
+# that do, on a boot where Persistent=true replays a missed tick.
+#
+# Pulled in by quantlab-tick.service's Wants= drop-in, not enabled directly.
+#
+# Set User and the paths to match the account that owns the checkout. Careful if
+# that is root: root's home is /root, not /home/root.
+
+[Unit]
+Description=quantlab book — one vol multiplier for every run
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/tradingview-mcp
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/root/tradingview-mcp/env/bin/python paper.py book --write
+
+# reading a handful of csv files should take seconds; a minute means something is wrong
+TimeoutStartSec=120

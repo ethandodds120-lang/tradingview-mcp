@@ -1,0 +1,26 @@
+# The one clock. Fires quantlab-tick.service every five minutes; that unit pulls
+# in every run's poll and then the book, as a single systemd transaction — see
+# quantlab-tick.service for why that matters.
+#
+# Five minutes does NOT make a strategy trade more often — it decides once per
+# closed bar either way, and a poll with no new bar does nothing. What the
+# cadence buys is execution: the gap between when the order is sent and the bar
+# open the backtest assumed is pure delay cost, and five minutes caps it.
+#
+# Persistent=true runs a missed tick on boot, which covers the VPS being
+# rebooted across a close. The delay is 5s, not 20s: the polls are Before= the
+# book, so every extra second here pushes the book's number later too.
+#
+# Install: deploy/README.md. Adding a run: paper.py start … && deploy/sync-tick.sh
+
+[Unit]
+Description=quantlab tick — poll every run, then size the book
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+RandomizedDelaySec=5
+Unit=quantlab-tick.service
+
+[Install]
+WantedBy=timers.target

@@ -99,6 +99,15 @@ def periods_per_year(index: pd.DatetimeIndex) -> float:
     if median_gap >= 86400 * 5:
         return 52.0
     if median_gap >= 86400:
+        # A daily index is not always an equity calendar. Crypto prints every
+        # day of the week, and annualising that with 252 understates its vol by
+        # sqrt(365/252) — 17% — which quietly turned a 15% vol target into ~18%
+        # on the first routed SOL run. A calendar with no weekend gap anywhere
+        # in its recent history is a 7-day calendar; anything with a gap of two
+        # days or more is trading sessions and stays on 252.
+        gaps = pd.Series(index).diff().dt.total_seconds().dropna().tail(90)
+        if len(gaps) >= 28 and (gaps < 86400 * 1.5).all():
+            return 365.25
         return 252.0
     return 252.0 * (6.5 * 3600 / median_gap)
 

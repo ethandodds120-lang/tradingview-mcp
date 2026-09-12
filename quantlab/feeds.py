@@ -3,11 +3,12 @@
 A feed's only job is to hand back recent OHLCV bars. It does not decide anything
 and it never places an order — nothing in this package can.
 
-The one rule every live feed obeys: DROP THE LAST BAR. On a live chart the most
-recent bar is still forming. Its high, low and close will all change before it
+The one rule every live feed obeys: DROP THE FORMING BAR. On a live chart the most
+recent bar is still being built. Its high, low and close will all change before it
 closes, so a signal computed on it is a signal you could not have acted on, and it
 will flicker between polls. `drop_last` is True for anything reading a live source
-and False for files of already-closed bars.
+and False for files of already-closed bars. A feed that can tell when a bar closes
+(AlpacaFeed) drops the newest one only while it is actually still forming.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import json
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -53,6 +55,13 @@ class Feed:
 
     def bars(self) -> pd.DataFrame:
         """fetch() with the forming bar removed and the columns normalized."""
+        df = self._normalized()
+        if self.drop_last and len(df):
+            df = df.iloc[:-1]
+        return df
+
+    def _normalized(self) -> pd.DataFrame:
+        """fetch() with the columns in order, sorted, deduplicated — nothing dropped."""
         df = self.fetch()
         if df is None or df.empty:
             return pd.DataFrame(columns=_COLS)
@@ -61,10 +70,7 @@ class Feed:
             if c not in df:
                 df[c] = np.nan
         df = df[_COLS].sort_index()
-        df = df[~df.index.duplicated(keep="last")]
-        if self.drop_last and len(df):
-            df = df.iloc[:-1]
-        return df
+        return df[~df.index.duplicated(keep="last")]
 
 
 @dataclass
@@ -226,6 +232,58 @@ class AlpacaFeed(Feed):
         step = pd.Timedelta(per.get(str(tf.unit_value), "1D")) * tf.amount_value
         # equities only print during the session, so ask for well more than we need
         return step * self.count * (1 if self.is_crypto else 4)
+
+    def _step(self) -> pd.Timedelta:
+        """The timeframe as clock time: how long a bar takes to form."""
+        tf = self._timeframe()
+        per = {"Min": "1min", "Hour": "1h", "Day": "1D", "Week": "1W"}
+        # the enum's .value is "Min"/"Day"; str() of it is "TimeFrameUnit.Day"
+        return pd.Timedelta(per[tf.unit_value.value]) * tf.amount_value
+
+    _SESSION_TZ = ZoneInfo("America/New_York")
+    _SESSION_CLOSE_HOUR = 16
+
+    def closed_at(self, ts) -> pd.Timestamp:
+        """When the bar stamped `ts` stops changing. Naive UTC, like the index.
+
+        Crypto trades round the clock, so a daily bar is done 24h after it opens.
+        An equity daily bar is stamped at midnight New York but only closes with
+        the session, 16:00 New York — 20:00 or 21:00 UTC depending on the season,
+        which is why this goes through the zone instead of adding a fixed offset.
+        Intraday bars of either class close one timeframe after they open.
+        Half-days are not modelled: on an early close the bar is reported as
+        forming until 16:00 and picked up by the next poll after that."""
+        ts = pd.Timestamp(ts)
+        if self._timeframe().unit_value.value != "Day" or self.is_crypto:
+            return ts + self._step()
+        # take the calendar date in New York, so a stamp on either side of the
+        # UTC midnight lands on the session it belongs to
+        local = ts.tz_localize("UTC").tz_convert(self._SESSION_TZ)
+        # multi-day bars (not something Alpaca serves, but harmless) close with the
+        # last session they cover
+        session = pd.Timestamp(local.date()) + self._step() - pd.Timedelta(days=1)
+        # set the wall-clock hour on the naive date and localize afterwards: adding
+        # 16h to a tz-aware midnight is elapsed time, and on a DST transition day
+        # the clocks skip or repeat an hour, so that lands at 15:00 or 17:00
+        close = session.replace(hour=self._SESSION_CLOSE_HOUR).tz_localize(self._SESSION_TZ)
+        return close.tz_convert("UTC").tz_localize(None)
+
+    def bars(self, now=None) -> pd.DataFrame:
+        """Drop the newest bar only while it is still forming.
+
+        The base rule drops it unconditionally. For crypto that is the same thing:
+        the current UTC day is always in progress. For equities it costs a full
+        session — Friday's finished bar is invisible all weekend and only shows up
+        once Monday's bar exists to be dropped in its place — so every order goes
+        out a bar late. `now` is a hook for tests; the loop never passes it."""
+        df = self._normalized()
+        if not len(df):
+            return df
+        if now is None:
+            now = pd.Timestamp.now(tz="UTC").tz_localize(None)
+        if pd.Timestamp(now) < self.closed_at(df.index[-1]):
+            df = df.iloc[:-1]
+        return df
 
     def prepare(self) -> dict:
         df = self.fetch()

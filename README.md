@@ -297,7 +297,21 @@ python paper.py start --strategy tjr --tv-symbol NQ1! --tv-timeframe 5 \
     --broker alpaca --broker-symbol QQQ --allow-short
 python paper.py run --id tjr-NQ1-20260905 --interval 60
 python paper.py unfilled --id tjr-NQ1-20260905   # orders the broker would not fill
+python paper.py report --id tjr-NQ1-20260905 --execution   # what each routed fill cost vs the bar open
 ```
+
+### Running several at once
+
+Every run sizes itself to its own vol target as though it were the only thing you
+own. `paper.py portfolio` shows what they add up to; `paper.py book` turns that into
+one multiplier `k` (never above 1) that every run applies to its next target so the
+whole book runs at the target vol. `book --write` publishes it to
+`paper_runs/book.json` and appends the tick to `book.jsonl`; a run that finds no
+fresh book sizes at `k = 1` and says so on stderr and in `paper_runs/alerts.log`.
+
+Unattended, this is one systemd timer: every five minutes it polls every run that
+is not `STOPPED`, then writes the book. `deploy/README.md` has the install, the
+add-a-run step (`paper.py start … && deploy/sync-tick.sh`) and the reboot test.
 
 The bar feed and the broker symbol are separate on purpose: the chart you develop
 on is often not something you can trade. Because they are different instruments,

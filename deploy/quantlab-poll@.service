@@ -1,11 +1,14 @@
 # Templated poll — one unit file for every run.
 #
-# %i is the run id, taken from the instance name:
-#     systemctl enable --now quantlab-poll@sol-trend-20260906.timer
-#     systemctl enable --now quantlab-poll@qqq-tsmom-20260912.timer
+# %i is the run id, taken from the instance name. Nothing enables these
+# directly any more: quantlab-tick.service pulls in one instance per run
+# through its generated Wants= drop-in (deploy/sync-tick.sh), so a run is
+# polled by being listed there and stops being polled by being STOPPED and
+# re-synced. Adding the tenth strategy is still one command, just not
+# `systemctl enable`.
 #
-# This replaces the single-run quantlab-poll.service. Adding the tenth strategy
-# should be one enable command, not a tenth copy of this file.
+# Before=quantlab-book.service is what makes the tick a transaction: every poll
+# finishes before the book sizes off the state they wrote.
 #
 # Set User and the paths to match the account that owns the checkout. Careful if
 # that is root: root's home is /root, not /home/root.
@@ -14,6 +17,7 @@
 Description=quantlab paper-trading poll (%i)
 After=network-online.target
 Wants=network-online.target
+Before=quantlab-book.service
 
 [Service]
 Type=oneshot
@@ -22,5 +26,17 @@ WorkingDirectory=/root/tradingview-mcp
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/root/tradingview-mcp/env/bin/python paper.py poll --id %i
 
-# Alpaca can be slow or down; do not let a hung request wedge the timer.
-TimeoutStartSec=300
+# A routed poll can outlive one tick. The worst case is a two-leg crypto flip
+# (close the old side, open the new): each leg sits for the limit (60s), then a
+# cancel and its confirmation (30s), then the market fallback (90s fill_timeout)
+# and its confirmation (30s) — 2 x 210 = 420s, against a 300s tick. 600s leaves
+# that room. When a poll is still running at the next tick, systemd merges the
+# new start job into the running one: no double run, one lost tick, and Before=
+# means the book waits for it rather than sizing off stale state.
+#
+# On SIGTERM the poll fires a cancel for each open leg (not waited on), then
+# saves state and exits; the next tick confirms the cancels by client id. That
+# takes seconds, so TimeoutStopSec only needs to be comfortably above a slow
+# Alpaca round-trip. 150 is generous, not a derived bound.
+TimeoutStartSec=600
+TimeoutStopSec=150

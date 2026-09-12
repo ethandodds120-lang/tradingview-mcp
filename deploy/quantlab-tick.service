@@ -1,0 +1,27 @@
+# The tick itself does nothing — ExecStart is /bin/true. Its job is the Wants=
+# list in the generated drop-in next to it:
+#
+#     /etc/systemd/system/quantlab-tick.service.d/wants.conf
+#     [Unit]
+#     Wants=quantlab-poll@<id>.service … quantlab-book.service
+#
+# Starting this unit starts every one of those in the same transaction, and the
+# ordering lives on the units themselves (quantlab-poll@.service is
+# Before=quantlab-book.service), so one timer gives you: all polls, then the
+# book, every five minutes. That is what makes book.json fresh when a run reads
+# it — a run that polls before the book has been sized reads the previous tick's
+# number, which is 5 minutes old and still inside the 2-tick freshness limit.
+#
+# Never edit wants.conf by hand: deploy/sync-tick.sh regenerates it from
+# `paper.py tick-wants`, which lists every run that is not STOPPED. Adding a run
+# is `paper.py start … && deploy/sync-tick.sh`; stopping one is `paper.py stop …
+# && deploy/sync-tick.sh`.
+#
+# Install: deploy/README.md.
+
+[Unit]
+Description=quantlab tick — one transaction: every poll, then the book
+
+[Service]
+Type=oneshot
+ExecStart=/bin/true
