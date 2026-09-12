@@ -307,6 +307,102 @@ been measured, so §5's deflation count does not move for them.
    the window may still sweep. A bar on which no class returns a sweep is not
    a sweep. Every level the wick took, in any class, is recorded.
 
+### 2.4 The one re-run under §2.3 (2026-09-12) — the fill count the experiment will produce
+
+`tjr_wide_funnel.py --mode decided` (the default now; `--mode literal`
+reproduces §2.1's printout and CSVs byte for byte). Printout
+`results/tjr_intraday/part2_decided_funnel.txt`, day rows
+`part2_decided_days_{NQ,ES}.csv` (the 29 literal columns plus 14: class
+bookkeeping, the eq excursion, co-occurrence, targets). Two adversarial
+reviews, neither refuted, no finding that moves a number; causality clean at
+seven cuts per instrument in the script's proof, 49 hand-chosen cuts plus 164
+exhaustive cuts at every fill bar and the bar after it in review, and 26
+cuts on manufactured later-excursion days. Definitions as built where §2.3
+was silent are in the printout's closing block; the ones that matter are
+below.
+
+| stage | NQ round 1 | NQ literal | NQ fresh-ifvg | **NQ decided** | ES round 1 | ES literal | ES fresh-ifvg | **ES decided** |
+|---|---|---|---|---|---|---|---|---|
+| sessions | 149 | 149 | 149 | 149 | 149 | 149 | 149 | 149 |
+| sweeps | 93 | 78 | 78 | **116** | 97 | 95 | 95 | **128** |
+| confirmations | 50 | 66 | 49 | **90** | 46 | 76 | 53 | **83** |
+| zones | 34 | 66 | 49 | **90** | 24 | 76 | 53 | **83** |
+| fills | 7 | 41 | 20 | **42** | 1 | 51 | 26 | **40** |
+
+**The number asked for: 82 fills over 149 sessions on the two instruments,
+0.55 a session-pair.** Before any `SKIP`, 100 filled trades is about 180
+sessions — roughly eight and a half months of both instruments running. On
+one instrument it is twice that. The 1-minute entry confirmation of §3.1 will
+move this somewhat in either direction; nothing here measures it.
+
+**What each decision did, measured.**
+
+1. **`ifvg` fresh-only** does what it was meant to: `ifvg` is on 54 of 90 NQ
+   and 42 of 83 ES confirmation bars, not 65 of 66 and 76 of 76, and `bos`
+   (52 / 43) and `ote` (68 / 65) now carry confirmations of their own —
+   `ifvg` is the sole first-to-fire on 22 / 22 days, `ote` on 8 / 9.
+2. **The `eq` retrace rule, as written, is inert on these frames.** The
+   excursion is met at the confirmation bar on 90 of 90 and 83 of 83
+   confirmed days, because the dealing range at confirmation is never
+   narrower than 1.29 ATR (NQ median 3.08, ES 2.89): the 09:30–09:45 bars
+   dwarf a 14-bar ATR that is mostly overnight bars, so 0.5 ATR beyond the
+   midpoint is always already true. The zone stage still equals the
+   confirmation stage; `eq` is the zone used on 79 / 90 and 71 / 83 setups
+   and on 39 of 42 and 33 of 40 fills. The later-bar path of the rule was
+   exercised only on a scratch run at 2.5 ATR (invariants and causality
+   held). The one reading in the log that *would* bite: on 14 of 39 NQ and
+   11 of 33 ES `eq` fills the touching bar opened at or beyond the midpoint —
+   price was already through it at the open, not retracing into it. A rule
+   on the touching bar ("opens on the far side of EQ") would remove those;
+   a threshold in ATR will not, at any value the range does not already
+   clear. **Co-occurrence:** at `eq` fills another zone type was in
+   discount on 25 / 22 (an `ob` on 24 / 17, a breaker on 7 / 10, a leg
+   `fvg` never); 14 / 11 `eq` fills had no other zone at all.
+3. **Ambiguity within a class recovers every round-1 sweep and adds a
+   third more.** Disagreement between classes happens on 4 NQ / 6 ES bars
+   all season; round 1's 93 / 97 sweep days are all kept but one (ES
+   03-10, ASIA short against H4 long). Sweeps go *up* to 116 / 128 for two
+   reasons: H1/H4 alone make 12 / 24 sweep days, and — this is a
+   consequence of §2.3's wording, not of the H1/HVN case that motivated
+   it — **round 1's own six levels are now three classes** (ASIA, LON, PD),
+   so a wick through ASIA_L and LON_H that closes back inside both is no
+   longer round 1's ambiguity (ASIA returns long, LON returns nothing).
+   Abstention is almost entirely H1 (an H1 swing high and low bracketing
+   the open: 40 / 34 sweep bars), and on 15 / 12 sweep bars a deeper
+   same-side level sat inside an abstaining class and is recorded but is
+   not the setup's. If the six session levels were one class and H1 / H4
+   two more, round 1's ambiguity would be restored for the six; that is a
+   one-line change and a decision for the user, not made here.
+4. **POC / HVN as targets.** Logged only, by price: T1 is the nearest level
+   beyond the entry of any name. Under that reading T1 is a POC / HVN on 12
+   / 12 fills and sits a median 0.35 / 0.59 ATR from the entry — but on 16 /
+   13 fills it is a *same-side-named* directional level (an `*_L` above a
+   long's entry) and on 9 / 5 it is the swept level itself, because the
+   entry is taken beyond the level the sweep took. For `tjr_human`, T1
+   should be the nearest **opposing-named** level (a high for a long) or a
+   POC / HVN beyond the entry; the CSV carries the names, so this is a
+   re-cut, not a re-run. Price ties between two names (3 NQ / 1 ES fills)
+   are one target, reported under both names.
+
+**Three readings the reviewers recorded, none a change.** The sweep test
+does not condition on the bar's open: 54 of 116 NQ and 42 of 128 ES decided
+sweeps are bars that *opened* beyond the level and closed back through it
+(round 1's own behaviour — 56 / 45 of its sweeps are the same), so the
+sweep count is not a count of wick-and-reclaim bars; if T-7 wants that
+reading it is a new primitive, not an edit. The first ~20 sessions of any
+frame run on a shallower composite and a thinner H4 swing history
+(`composite_depth` in the CSV), so a live detector must be warmed on at
+least 20 completed sessions plus the 4-hour history before its levels
+match these. And "levels the wick took" is round 1's range-cover test, so
+an opposite-side level resting beyond the open is counted as taken on 18 /
+29 of the 105 / 94 logged opposite-side breaches; that affects only the
+logged count.
+
+**One proof-helper gap, fixed in the commit that records this:** the
+script's `as_of()` did not forget the fresh-inversion bookkeeping when it
+forgot the sweep; the truncated run was the correct side and no printed
+field or count depends on it.
+
 ## 3. Part 3 — `tjr_human` (T-7)
 
 ### 3.1 Signal layer
