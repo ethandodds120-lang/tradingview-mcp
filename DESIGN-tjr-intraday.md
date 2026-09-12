@@ -270,6 +270,112 @@ won. Twelve trades is not a sample, and none of the above is evidence about the
 market; all of it is a description of what his rules do when a program follows
 them.
 
+## 11. Round 2 — the final round: 1-minute entries and the stop-width variable
+
+Pre-specified before any data was looked at. Two changes, one cumulative
+trial count, and whatever comes back is the verdict on TJR. There is no round
+three.
+
+### 11.1 Why these two
+
+He specifies 1-minute bars for confirmation and entry; round 1 ran everything
+on 5-minute bars and found that the displacement leg (two or three 5-minute
+bars) never leaves a gap, so every entry was an inverted FVG. And round 1's
+geometry — direction right 5 of 8, median excursion 3.4 R *after* the stop
+fired, stop inside one bar's range — points at exactly one variable: how far
+the stop sits. Both are tested here; nothing else changes.
+
+### 11.2 Data
+
+TradingView `CME_MINI:ES1!` / `NQ1!` at **1 minute**, paged back with
+`scripts/dump_bars.js` until the feed runs out → `data/ES_1min_tv.csv`,
+`data/NQ_1min_tv.csv`. The session count this yields is reported before the
+gauntlet is read, and if it is under ~100 sessions the 1-minute result is
+labelled as such: it is still run, because the contract says so, but it is
+not evidence either way.
+
+### 11.3 The two-timeframe model (`entry_tf = 1`)
+
+Input is the 1-minute frame. Everything in §1–§4 steps 1–4 (levels, swings,
+sweep, BOS, equilibrium) stays on **5-minute context bars**, which the
+strategy builds itself by resampling the 1-minute OHLC to 5-minute bars
+labelled by open time. A 5-minute bar exists at 1-minute bar *i* only once its
+last constituent minute is `<= i`; nothing about a partial 5-minute bar is ever
+read. Sweep and BOS are therefore detected on the 1-minute bar that
+*completes* the 5-minute bar they occur on. Swings are `confirmed_swings` on
+the 5-minute context and admitted at the 1-minute bar completing their
+`confirmed_at` bar.
+
+Steps 5–9 move to 1-minute bars:
+
+- **Displacement leg** = 1-minute bars from the bar that printed the sweep
+  extreme (the 5-minute sweep bar's wick) to the bar completing the BOS. An
+  FVG qualifies if it completes at `k` with `extreme_1m + 2 <= k <= bos_1m`, or
+  later inside the entry window. Same EQ rule.
+- **iFVG** = a counter-trend 1-minute gap completed at any bar of day D up to
+  the BOS bar, inverted by a 1-minute close beyond it at `j >= first minute of
+  the 5-minute sweep bar`.
+- **Fill** on a 1-minute bar stamped in 09:50:00–10:09:59, strictly after both
+  the BOS bar and the zone bar; `entry = min(zone.high, open)` for longs.
+- **Stop / target / exit** evaluated on every 1-minute bar; flat at the 15:55
+  1-minute bar's close; eod hold on the last bar of the input.
+- One trade per day, first valid setup wins, as before.
+
+The 5-minute model (`entry_tf = 5`) is untouched except for §11.4.
+
+### 11.4 The stop-width variable, both timeframes
+
+`stop_mode`, applied at fill time; `risk = |entry − stop|` must be positive:
+
+| `stop_mode` | long stop | notes |
+|---|---|---|
+| `wick` | sweep extreme − `stop_buffer_atr` × ATR | round 1's rule, unchanged |
+| `atr1.0` | entry − 1.0 × ATR | |
+| `atr1.5` | entry − 1.5 × ATR | |
+| `atr2.0` | entry − 2.0 × ATR | |
+| `session` | (lowest low of trading day D up to the entry bar) − `stop_buffer_atr` × ATR | "beyond the session extreme"; coincides with `wick` whenever the sweep set the day's low, which is often |
+
+ATR is **ATR(14) of the 5-minute context** in both models, at the 5-minute bar
+containing the entry, so the multiples mean the same thing on both timeframes
+and are comparable to round 1's 3.4 R figure. Targets do not change — the next
+pool — so wider stops mean lower reward-to-risk; that trade-off is the test.
+
+### 11.5 Grid and the cumulative trial count
+
+```
+stop_mode:    [wick, atr1.0, atr1.5, atr2.0, session]
+min_fvg_atr:  [0.0, 0.25]
+allow_ifvg:   [True, False]           -> 20 per (timeframe, instrument, variant)
+stop_buffer_atr fixed at 0.25 (round 1 found 0 vs 0.25 immaterial)
+```
+
+2 timeframes × 2 instruments × 2 variants × 20 = **160 new trials**. Round 1's
+32 are counted in full even though eight of them recur here, so the
+cumulative count is **192**. The deflated Sharpe of the best trial is reported
+against 192; `tjr_intraday_search.py` pools everything.
+
+### 11.6 Registry
+
+| name | frame | change |
+|---|---|---|
+| `tjr_intraday`, `tjr_intraday_smt` | 5-minute | gain `stop_mode` (default `wick`); grid becomes the 20 above |
+| `tjr_intraday_1m`, `tjr_intraday_1m_smt` | 1-minute | new; same module, `entry_tf=1` |
+
+### 11.7 Acceptance
+
+- With `stop_mode=wick`, `stop_buffer_atr=0.25`, the 5-minute model reproduces
+  round 1's twelve trades exactly (entry, stop, target, exit, bar for bar).
+- `causality_check` clean on the 1-minute frames for both variants, **and** a
+  truncation at a minute that is not a 5-minute boundary gives an identical
+  signal over the overlap — that is the test that the resample does not read a
+  partial context bar.
+- All §10 invariants hold on 1-minute trades, with "sweep bar" and "BOS bar"
+  meaning the completing 1-minute bar.
+- Unit tests: a hand-built 1-minute day where every rule fires; each
+  `stop_mode` produces the stop the table says on that day; a mid-5-minute-bar
+  truncation test.
+- `tjr` byte-identical; `run.py --strategy tjr --synthetic --quick` identical.
+
 ## 10. Acceptance
 
 - `causality_check` clean (6 truncations) on both ES and NQ frames, both variants.

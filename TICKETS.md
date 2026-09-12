@@ -3,14 +3,46 @@
 Work that is agreed, sequenced, and not started. One entry per item; close by
 deleting it when the commit that fixes it lands. Order matters and is stated.
 
-## Sequence after the 2026-09-12 deploy has run quietly
+## Sequence (re-ordered 2026-09-12, after the TJR intraday round 2 closes)
 
-1. **T-1 kill rules** (plain code, no LLM in the loop)
-2. **T-3 bootstrap ignores the rebalance band** — fix here, before any new
-   routed runs are started in number
-3. **T-2 incubation gate**
-4. **T-4 heartbeat, halt flag, and push alerts from the VPS**
-5. strategy search
+1. **T-1 kill rules** together with **T-4 heartbeat, halt flag, push alerts**
+   (plain code, no LLM in the loop)
+2. **T-3 bootstrap ignores the rebalance band** — before any batch of new
+   routed runs
+3. **T-2 incubation gate** (carried; not re-confirmed in the latest ordering)
+4. **T-5 Turtle / Donchian on a diversified basket** (from the traders report)
+5. **T-6 ORB Stocks-in-Play** (from the traders report)
+
+The TJR intraday work is closed after round 2 (`DESIGN-tjr-intraday.md` §11);
+whatever it returns is the verdict and there is no round three.
+
+## T-5 — Turtle / Donchian on a diversified basket
+
+The published trend-following result is a *diversified futures* result
+(Moskowitz-Ooi-Pedersen: 58 contracts across equity indices, currencies,
+commodities, bonds). `donchian` exists in the registry as a single-instrument
+strategy; the basket version is a panel strategy (`kind="panel"`, book-level
+vol targeting) over a universe wide enough to mean something.
+
+**Data flag, to be costed when we get there:** a diversified futures basket
+needs a paid CME (and ideally ICE/Eurex) history feed — Databento or Norgate
+are the usual retail-priced options. TradingView's continuous contracts cover
+the CME index futures we have used so far but not a 20–50 contract universe
+across asset classes, and Yahoo's futures history is 60 days at intraday and
+inconsistent at daily. An ETF proxy basket (sector, bond, commodity, currency
+ETFs from Alpaca) is the free alternative and is what `xs_momentum` already
+runs on; it is a different instrument set with different costs and no
+overnight session, and the report should say which was used.
+
+## T-6 — ORB Stocks-in-Play
+
+Opening-range breakout on stocks selected for relative volume ("in play"),
+from the traders report. Needs: a daily universe scan (relative volume at the
+open vs a trailing baseline), 1- or 5-minute equity bars from Alpaca (free tier
+is IEX; fine for liquid names, thin for the tail), and the panel machinery
+because the selection is cross-sectional. Costs are equity costs (near zero
+commission, spread plus slippage); the interesting failure mode is fills at
+the open on names that are in play *because* they are gapping.
 
 ---
 
