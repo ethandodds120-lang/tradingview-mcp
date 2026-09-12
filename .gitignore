@@ -18,3 +18,8 @@ SOL_*.csv
 node_modules/
 __pycache__/
 paper_runs/
+
+# virtualenv lives inside the repo
+env/
+# research data pulled from vendor APIs, not source
+QQQ_1h.csv

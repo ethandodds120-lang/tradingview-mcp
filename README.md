@@ -166,6 +166,20 @@ ICT backtest produces results that cannot be traded.
    distinguished from randomness.
 4. **Cost sweep.** At what commission does the edge die? If the answer is near where
    you actually trade, you don't have an edge, you have a rounding error.
+5. **Search cost.** Everything above reports the best of N parameter combinations,
+   and that number is biased upward by construction. The **Deflated Sharpe Ratio**
+   (Bailey & López de Prado) asks whether the best result clears what N attempts
+   would produce on data with no edge at all, correcting for skew and fat tails.
+   **PBO** (combinatorially symmetric cross-validation) asks how often the
+   in-sample winner lands below the out-of-sample median. Read PBO loosely — on
+   pure noise it centres correctly at 0.5 but with a standard deviation near 0.19,
+   so a single run of 0.6 means little and 0.85 means something.
+6. **Drawdown distribution.** The backtest's max drawdown is one draw from a
+   distribution, and sizing to it is how you get surprised in month three. Resample
+   the returns in blocks — blocks, because volatility clustering is *where
+   drawdowns come from*, and an IID bootstrap understates them badly — then read
+   the 95th percentile and the probability of breaching a ruin threshold
+   (`--ruin-dd`). A signal can be real and still end the account.
 
 ## Reading the output
 

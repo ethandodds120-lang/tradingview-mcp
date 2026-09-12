@@ -1,0 +1,14 @@
+# quantlab runtime dependencies.
+#
+# Pinned to what the refactor was validated against on 2026-09-09. pandas 3.x
+# changed enough behaviour around ffill/replace that an unpinned install can move
+# strategy numbers, so upgrade deliberately and re-run the gauntlet when you do:
+#     python run.py --strategy tjr --synthetic --quick
+#
+# yfinance is optional — only `run.py --yahoo` needs it. Install it separately if
+# you want that feed; nothing in the paper-trading path imports it.
+
+pandas==3.0.5
+numpy==2.5.3
+alpaca-py==0.44.0
+python-dotenv==1.2.3

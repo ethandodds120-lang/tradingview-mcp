@@ -206,3 +206,15 @@ need a proportionally larger gross edge to finish level.
    stream position depends on `len(df)`, not on any future bar. Do not "fix" it:
    `validate.random_benchmark` draws from it to score every other strategy's random
    gate, so changing it silently moves every verdict.
+7. **The gauntlet prices in its own search.** Gates 5 and 6 (`deflated_sharpe`,
+   `probability_of_backtest_overfitting`, `drawdown_distribution`) exist because
+   everything above them reports the best of N grid combinations. When adding a
+   parameter to a grid, remember it raises the bar the strategy has to clear —
+   N goes up, so the Sharpe expected from noise goes up too.
+8. **PBO is noisy.** Measured on pure noise over 25 seeds: mean 0.54, sd 0.19,
+   range 0.21–0.90. Its gate sits at 0.6, not the nominal 0.5, because gating on
+   the boundary fails honest strategies about half the time. Never report a single
+   PBO figure as if it were precise.
+9. **Bootstrap drawdowns in blocks, never IID.** Volatility clustering is where
+   drawdowns come from. On a clustered series the IID bootstrap reported -20.5% at
+   the 95th percentile where the block bootstrap reported -33.4%.

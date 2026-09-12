@@ -1,0 +1,25 @@
+# Templated timer — one per run, enabled by instance name.
+#
+#     systemctl enable --now quantlab-poll@<run-id>.timer
+#
+# Five minutes suits daily and hourly bars. The strategy does not decide more
+# often than its bar size no matter how often this fires — a poll with no new
+# closed bar does nothing. What the cadence buys is execution: the order is a
+# market order sent whenever the poll runs, while the backtest assumed a fill at
+# the bar open, so the gap between them is pure delay cost. Measured at hourly
+# cadence on the first real fill: 84 bps of drift on top of 31 bps of slippage.
+#
+# For bars of 15 minutes or less, drop this to OnCalendar=*:*:0 (every minute).
+
+[Unit]
+Description=Run the quantlab poll for %i
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+# stagger so N runs do not all hit the venue on the same tick
+RandomizedDelaySec=20
+Unit=quantlab-poll@%i.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,26 @@
+# Templated poll — one unit file for every run.
+#
+# %i is the run id, taken from the instance name:
+#     systemctl enable --now quantlab-poll@sol-trend-20260906.timer
+#     systemctl enable --now quantlab-poll@qqq-tsmom-20260912.timer
+#
+# This replaces the single-run quantlab-poll.service. Adding the tenth strategy
+# should be one enable command, not a tenth copy of this file.
+#
+# Set User and the paths to match the account that owns the checkout. Careful if
+# that is root: root's home is /root, not /home/root.
+
+[Unit]
+Description=quantlab paper-trading poll (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/tradingview-mcp
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/root/tradingview-mcp/env/bin/python paper.py poll --id %i
+
+# Alpaca can be slow or down; do not let a hung request wedge the timer.
+TimeoutStartSec=300

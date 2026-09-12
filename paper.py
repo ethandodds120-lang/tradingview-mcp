@@ -198,6 +198,140 @@ def cmd_list(args) -> int:
     return 0
 
 
+def cmd_portfolio(args) -> int:
+    """What the runs add up to. Reads only — changes nothing.
+
+    Every run sizes itself to its own volatility target as though it were the
+    only thing you own. It is not, and correlated runs stack: two trend models
+    on gold and silver are close to the same position twice. Nothing in the
+    engine knows that, because nothing in the engine owns the portfolio. This
+    command is the missing view, not the missing allocator.
+    """
+    import numpy as np
+
+    from quantlab import feeds
+
+    rows = []
+    for run_id in paper.PaperRun.list_runs(args.dir):
+        try:
+            run = paper.PaperRun.load(args.dir, run_id)
+        except paper.ParamDrift:
+            print(f"  skipping {run_id} — PARAM DRIFT")
+            continue
+        cfg, st = run.config, run.state
+        symbol = (cfg.get("broker") or {}).get("symbol") or cfg["feed"].get("symbol")
+        if not symbol:
+            continue
+        equity = float(st.get("equity") or 0.0)
+        units = float(st.get("units") or 0.0)
+        cash = float(st.get("cash") or 0.0)
+        # what the run is actually holding, as a fraction of its own equity
+        frac = (equity - cash) / equity if equity else 0.0
+        # ... and what it intends to hold once its next order fills. A run that is
+        # flat today because its market is shut is not a run with no exposure; it
+        # is a run with exposure arriving at the next open, and a book-level view
+        # that ignores that is reassuring at exactly the wrong moment.
+        pending = st.get("pending") or {}
+        want = float(pending.get("target", frac))
+        rows.append({"run": run_id, "symbol": symbol, "strategy": cfg["strategy"],
+                     "equity": equity, "units": units, "frac": frac, "want": want,
+                     "vol_target": float(cfg.get("vol_target") or 0.0),
+                     "routed": bool(cfg.get("broker"))})
+
+    if not rows:
+        print(f"  no runs under {args.dir}/")
+        return 0
+
+    total = sum(r["equity"] for r in rows)
+    print(f"\n  {len(rows)} runs, {total:,.2f} total equity\n")
+    print(f"  {'run':<28}{'symbol':<10}{'held':>9}{'wants':>9}{'of book':>10}"
+          f"{'vol tgt':>9}  routed")
+    for r in rows:
+        weight = r["equity"] / total if total else 0.0
+        print(f"  {r['run']:<28}{r['symbol']:<10}{r['frac']:>8.1%}{r['want']:>9.1%}"
+              f"{weight * r['want']:>10.1%}{r['vol_target']:>9.0%}"
+              f"   {'yes' if r['routed'] else 'no'}")
+
+    symbols = sorted({r["symbol"] for r in rows})
+    if len(symbols) < 2:
+        print("\n  Only one instrument — nothing to diversify or double up on.\n")
+        return 0
+
+    # Price what can be priced. A run fed from a TradingView chart can carry a
+    # symbol Alpaca has never heard of (NQ1! and friends), and letting one of
+    # those abort the whole calculation makes this command useless exactly when
+    # the book is most mixed. Skip them, say so, and report the covariance over
+    # the rest — a partial answer that names what it left out.
+    px, skipped = {}, []
+    for s in symbols:
+        try:
+            close = feeds.AlpacaFeed(symbol=s, timeframe="1D",
+                                     count=args.bars).fetch()["close"]
+            # Crypto daily bars are stamped 00:00 UTC and equity bars 05:00, so a
+            # raw join aligns on nothing and dropna() empties the frame. Collapse
+            # both to the calendar date before lining them up.
+            close.index = close.index.normalize()
+            px[s] = close[~close.index.duplicated(keep="last")]
+        except Exception as exc:
+            skipped.append((s, str(exc).split("\n")[0][:60]))
+
+    if skipped:
+        print()
+        for s, why in skipped:
+            print(f"  ! {s} left out of the covariance — {why}")
+        symbols = [s for s in symbols if s in px]
+        rows = [r for r in rows if r["symbol"] in px]
+
+    if len(px) < 2:
+        print("\n  need at least two priceable symbols for a covariance\n")
+        return 1
+
+    import pandas as pd
+
+    ret = pd.DataFrame(px).pct_change().dropna()
+    if len(ret) < 30:
+        print("\n  not enough overlapping history to estimate a covariance\n")
+        return 1
+
+    print(f"\n  correlation of daily returns ({len(ret)} bars)\n")
+    print("   " + ret.corr().round(2).to_string().replace("\n", "\n   "))
+
+    # exposure of the whole book to each instrument: a run's own position scaled
+    # by its share of total capital, summed over runs that hold the same thing
+    cov = ret[symbols].cov().values * 252.0
+
+    def book_vol(key: str) -> tuple[np.ndarray, float, float]:
+        w = np.zeros(len(symbols))
+        for r in rows:
+            w[symbols.index(r["symbol"])] += (r["equity"] / total) * r[key]
+        return (w, float(np.sqrt(w @ cov @ w)),
+                float(np.sqrt((w ** 2 * np.diag(cov)).sum())))
+
+    w_now, vol_now, naive_now = book_vol("frac")
+    w_next, vol_next, naive_next = book_vol("want")
+    targets = {r["vol_target"] for r in rows if r["vol_target"]}
+
+    print(f"\n  {'':<22}{'held now':>12}{'once filled':>14}")
+    for i, s in enumerate(symbols):
+        print(f"  {s:<22}{w_now[i]:>11.1%}{w_next[i]:>14.1%}")
+    print(f"  {'combined book vol':<22}{vol_now:>11.1%}{vol_next:>14.1%}")
+    print(f"  {'if uncorrelated':<22}{naive_now:>11.1%}{naive_next:>14.1%}")
+
+    if targets:
+        tgt = max(targets)
+        print(f"\n  Each run targets {tgt:.0%} vol, sized as though it were the only "
+              f"thing you own.")
+        if vol_next > tgt * 1.15:
+            print(f"  Once the pending orders fill the book runs at {vol_next:.1%} — "
+                  f"{vol_next / tgt:.1f}x that.")
+            print(f"  Correlated positions stack and the runs cannot see each other."
+                  f"\n  Size the book, not the strategies.")
+        elif vol_now <= tgt:
+            print(f"  Currently within it, but only because some runs are still flat.")
+    print()
+    return 0
+
+
 def cmd_unfilled(args) -> int:
     run = paper.PaperRun.load(args.dir, args.id)
     df = run.unfilled_frame()
@@ -361,6 +495,12 @@ def main() -> int:
 
     lst = sub.add_parser("list", help="all runs")
     lst.set_defaults(func=cmd_list)
+
+    pf = sub.add_parser("portfolio",
+                        help="what every run adds up to — combined exposure and vol")
+    pf.add_argument("--bars", type=int, default=400,
+                    help="bars of history for the covariance estimate")
+    pf.set_defaults(func=cmd_portfolio)
 
     fil = sub.add_parser("fills", help="the fill ledger — every paper trade")
     fil.add_argument("--id", required=True)

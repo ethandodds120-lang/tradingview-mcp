@@ -1,0 +1,28 @@
+# One poll of the forward test. Fired by quantlab-poll.timer, not run directly.
+#
+# Type=oneshot rather than a long-lived process on purpose: poll_forever() writes
+# everything it needs to disk after each poll, so a run that dies loses nothing but
+# the sleep. A timer that re-fires is self-healing in a way a daemon is not — if
+# one poll fails, the next hour picks the bar up.
+#
+# Install: see deploy/README.md.
+#
+# Set USER and both paths to match the account that owns the checkout. Careful if
+# that account is root: root's home is /root, not /home/root, so a blind
+# find-and-replace of YOUR_USER produces a path that does not exist and systemd
+# fails the unit with a bare status=200/CHDIR that explains nothing.
+
+[Unit]
+Description=quantlab paper-trading poll
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/tradingview-mcp
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/root/tradingview-mcp/env/bin/python paper.py poll --id sol-trend-20260906
+
+# Alpaca can be slow or down; do not let a hung request wedge the timer.
+TimeoutStartSec=300

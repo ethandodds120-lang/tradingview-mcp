@@ -187,6 +187,12 @@ def main():
     cfg.add_argument("--folds", type=int, default=5)
     cfg.add_argument("--trials", type=int, default=300)
     cfg.add_argument("--quick", action="store_true", help="skip the slow tests")
+    cfg.add_argument("--ruin-dd", type=float, default=0.50,
+                     help="the drawdown that would end the experiment, as a "
+                          "fraction. 0.50 is 'capital halved'; set it to your prop "
+                          "firm's max-drawdown rule if you have one (default 0.50)")
+    cfg.add_argument("--paths", type=int, default=2000,
+                     help="bootstrap paths for the drawdown distribution")
     cfg.add_argument("--param", action="append", metavar="K=V",
                      help="override a strategy param, e.g. --param long_only=true. "
                           "Applies to the defaults only — walk-forward and "
@@ -298,9 +304,13 @@ def main():
             print("  In-sample Sharpe was not positive, so there is nothing to decay from.")
 
     # ── 2. parameter sensitivity ──
+    # One pass over the grid, reused by the deflation tests below. On tjr the grid
+    # is 36 path-dependent simulations, so running it twice would double the wait
+    # for numbers derived from the same trials.
     rule()
     print("\n[2] PARAMETER SENSITIVITY — is it a plateau or a spike?\n")
-    sens = validate.parameter_sensitivity(df, strat, costs, **bt)
+    raw, matrix, grid_ppy = validate.trial_matrix(df, strat, costs, **bt)
+    sens = raw.sort_values("sharpe", ascending=False) if not raw.empty else raw
     if sens.empty:
         print("  no parameter grid defined")
     else:
@@ -335,15 +345,67 @@ def main():
     breakeven = float(positive["round_trip_bps"].max()) if not positive.empty else 0.0
     print(f"\n  Edge survives to roughly {breakeven:.0f} bps round trip")
 
+    # ── 5. what the search itself cost ──
+    dsr_val = pbo_val = None
+    if not sens.empty and matrix.shape[1] > 1:
+        rule()
+        print("\n[5] SEARCH COST — how much of the best result was luck?\n")
+        best_col = int(raw["sharpe"].values.argmax())
+        best_returns = pd.Series(matrix[:, best_col], index=df.index)
+        ds = validate.deflated_sharpe(best_returns, grid_ppy, raw["sharpe"].values)
+        pb = validate.probability_of_backtest_overfitting(matrix)
+        dsr_val, pbo_val = ds["dsr"], pb["pbo"]
+
+        print(f"  grid searched            {ds['trials']} parameter combinations")
+        print(f"  best Sharpe found        {raw['sharpe'].max():.2f}")
+        print(f"  expected best from noise {ds['sr0']:.2f}   "
+              f"← what {ds['trials']} tries would give on data with no edge")
+        print(f"  deflated Sharpe          {ds['dsr']:.2f}   "
+              f"← P(the edge is real, given the search)")
+        print(f"  overfitting probability  {pb['pbo']:.0%}   "
+              f"← how often the in-sample winner lands below the")
+        print(f"                                    out-of-sample median, over "
+              f"{pb['splits']} splits")
+        print(f"                                    (noisy: sd ~19% on a single "
+              f"run — read it loosely)")
+        if np.isfinite(ds["dsr"]) and ds["dsr"] < 0.95:
+            print(f"\n  The best setting does not clear what {ds['trials']} attempts "
+                  f"produce on noise.\n  That is a statement about the search, not "
+                  f"about the market.")
+
+    # ── 6. drawdown distribution ──
+    rule()
+    print("\n[6] DRAWDOWN DISTRIBUTION — can the sizing survive its own bad luck?\n")
+    ruin = validate.drawdown_distribution(base.returns, base.ppy, n_paths=args.paths,
+                                          ruin_threshold=args.ruin_dd)
+    if not ruin.get("paths"):
+        print("  too few bars to resample")
+        ruin = None
+    else:
+        print(f"  realized max drawdown    {ruin['realized_dd']:>7.1%}   "
+              f"← the one number a backtest gives you")
+        print(f"  median of {ruin['paths']} paths     {ruin['dd_median']:>7.1%}")
+        print(f"  95th percentile          {ruin['dd_p95']:>7.1%}   "
+              f"← plan for this one")
+        print(f"  99th percentile          {ruin['dd_p99']:>7.1%}")
+        print(f"\n  the realized drawdown was luckier than "
+              f"{ruin['realized_pct']:.0f}% of resampled paths")
+        print(f"  longest time under water {ruin['tuw_p95_bars']:.0f} bars "
+              f"({ruin['tuw_p95_years']:.1f} years) at the 95th percentile")
+        print(f"\n  P(breaching -{ruin['ruin_threshold']:.0%}) = "
+              f"{ruin['p_ruin']:.1%} of paths")
+
     # ── verdict ──
     rule("═")
     print("\nVERDICT\n")
     for line in validate.verdict(wf_sum.get("sharpe", 0.0), wf_sum.get("folds_positive", 0.0),
-                                 sens, rand_pct, breakeven, args.cost_bps):
+                                 sens, rand_pct, breakeven, args.cost_bps,
+                                 dsr=dsr_val, pbo=pbo_val,
+                                 t_stat=base_summary.get("t_stat"), ruin=ruin):
         print("  " + line)
     print()
     rule("═")
-    print("\n  Passing all five is necessary, not sufficient. It means the strategy")
+    print("\n  Passing every gate is necessary, not sufficient. It means the strategy")
     print("  is not obviously fake. Paper trade it for months before risking money.\n")
 
 
