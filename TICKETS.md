@@ -7,16 +7,61 @@ deleting it when the commit that fixes it lands. Order matters and is stated.
 
 1. **T-1 kill rules** together with **T-4 heartbeat, halt flag, push alerts**
    (plain code, no LLM in the loop)
-2. **T-3 bootstrap ignores the rebalance band** — before any batch of new
+2. **T-7 indicator + human-exit experiment** — build only after T-1 and T-4
+   are live; its Part 1 (trailing benchmark) and Part 2 (wide funnel) are
+   analysis and run now
+3. **T-3 bootstrap ignores the rebalance band** — before any batch of new
    routed runs
-3. **T-2 incubation gate** (carried; not re-confirmed in the latest ordering)
-4. **T-5 Turtle / Donchian on a diversified basket** (from the traders report)
-5. **T-6 ORB Stocks-in-Play** (from the traders report)
+4. **T-2 incubation gate** (carried; not re-confirmed in the latest ordering)
+5. **T-5 Turtle / Donchian on a diversified basket** (from the traders report)
+6. **T-6 ORB Stocks-in-Play** (from the traders report)
+7. **T-8 POC / HVN standalone test** — whenever there is budget; cheap
 
-**TJR intraday: closed 2026-09-12.** Two pre-specified rounds; verdict in
-`DESIGN-tjr-intraday.md` §12 (best of 192 trials deflates to 0.41; every
-5-minute run fails every edge gate; the 1-minute data runs to 30 sessions).
-No round three. The four strategies stay registered as `folklore`.
+**TJR intraday, mechanical: closed 2026-09-12.** Two pre-specified rounds;
+verdict in `DESIGN-tjr-intraday.md` §12 (best of 192 trials deflates to 0.41;
+every 5-minute run fails every edge gate; the 1-minute data runs to 30
+sessions). No round three on the rules. T-7 is not a third round: it measures
+the discretionary exit layer the mechanical test could not, as an experiment
+on the human, with its own pre-registration in `DESIGN-tjr-human.md`.
+
+## T-7 — Indicator + human-exit experiment (`tjr_human`)
+
+**Why.** Two round-1 numbers point somewhere the rules cannot go: T1 printed
+later on 4 of 8, and the median favourable excursion *after* the fixed stop
+fired was about 3 R (raised as "5 of 8, 3.4 R"; corrected by Part 1 —
+`DESIGN-tjr-intraday.md` §9). Round 2 showed a wider initial stop makes total
+R worse. The only
+version that could harvest that excursion is the one TJR actually trades:
+signals mechanical, exit human. This measures that layer instead of assuming
+it.
+
+**What.** A paper run built to the wider spec (`DESIGN-tjr-human.md` §2):
+the bot finds and enters every signal; the human may only skip a signal
+before it fills, tighten the stop, or exit at market. Everything is journaled
+by the bot. Pre-registered sample of 100 filled trades, pass bar fixed before
+trade one — `DESIGN-tjr-human.md` §5.
+
+**Gates.** Part 1 first: if a mechanical trailing rule harvests the excursion
+on its own, deploy the rule and skip the human. Part 2 next: the funnel on
+the wider spec, no gauntlet. Build after T-1 and T-4 are live — the run needs
+the kill rules and the push channel, and its human controls ride the same
+Telegram bot. Never goes live on the box before a dry run is shown.
+
+**Open cost item.** The signal layer runs on live ES/NQ 1-minute and 5-minute
+bars. The VPS has no futures feed (Alpaca serves none). Options and their
+reliability are in `DESIGN-tjr-human.md` §7; the paid live feed is the same
+line item T-5 flags.
+
+## T-8 — POC / HVN standalone test
+
+Separate from TJR. Session point of control and fixed 20-session composite
+high-volume nodes as a standalone level strategy on ES/NQ 5-minute bars,
+tagged `folklore`: first touch of a level from above/below, entry on a
+5-minute close back away from it, 1 ATR stop, target the next level. Full
+gauntlet at real futures costs; every grid cell counted as a trial in the
+cumulative count. Says whether the level type carries anything on its own,
+independent of the TJR structure. Uses the volume-profile primitives Part 2
+of T-7 adds.
 
 ## T-5 — Turtle / Donchian on a diversified basket
 

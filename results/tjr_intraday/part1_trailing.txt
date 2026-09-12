@@ -1,0 +1,52 @@
+PART 1 — trailing-stop benchmark on the existing TJR entries (initial stop = round 1's wick rule)
+
+reproduction check: 'fixed' replay vs the model's own r — identical 
+
+src   day          S   level  entry   risk  stopped   fixed   be_1r  atr1.0  atr1.5   swing  hybrid  mfe<stop  mfe>stop  T1 later
+NQ 5m 2026-05-12   L  ASIA_L  09:55  11.6b    09:55   -1.00   -1.00   -1.00   -1.00   -1.00   -1.00     +0.00     +1.88        no
+NQ 5m 2026-05-15   L  ASIA_L  09:50   4.8b    09:50   -1.00   -1.00   -1.00   -1.00   -1.00   -1.00     +0.00    +21.49 yes 14:05
+NQ 5m 2026-05-19   L  ASIA_L  10:00  20.7b    10:05   -1.00   -1.00   -0.29   -0.86   -0.41   -1.00     +0.85     +3.90 yes 13:20
+NQ 5m 2026-05-28   S   LON_H  10:05   2.5b    10:05   -1.00   -1.00   -1.00   -1.00   -1.00   -1.00     +0.00     +2.99        no
+NQ 5m 2026-06-08   S   LON_H  09:50  21.8b    10:35   -1.00   -0.00   +0.52   +1.47   -1.00   +0.52     +3.17     +2.46        no
+NQ 5m 2026-06-16   L  ASIA_L  10:00  16.9b    10:15   -1.00   +0.00   +0.45   +0.04   -0.02   +0.45     +1.27     -0.41        no
+NQ 5m 2026-08-28   L   LON_L  10:00  21.0b    10:10   -1.00   +0.00   +0.22   +0.22   -0.85   +0.22     +1.44     +3.14 yes 10:20
+ES 5m 2026-07-15   S     PDH  09:55  10.2b    10:00   -1.00   -1.00   -0.26   -0.64   -1.00   -1.00     +0.52     +5.27 yes 11:15
+NQ 1m 2026-08-14   S  ASIA_H  10:06   2.7b    10:19  +12.02   -0.00  +12.02  +12.02  +12.02   -0.00    +11.23    +29.62 yes 10:20
+NQ 1m 2026-08-28   L   LON_L  10:00  21.6b    10:01   +0.69   +0.69   +0.88   +0.64   +0.69   +0.88     +1.36     +3.01 yes 10:22
+ES 1m 2026-08-20   L     PDL  10:05   3.2b    10:15   -1.00   +0.00   -0.29   -1.00   -1.00   +0.00     +3.11     +8.83        no
+
+totals (R):   fixed +3.71  be_1r -4.31  atr1.0 +10.25  atr1.5 +8.89  swing +5.43  hybrid -2.94
+wins:         fixed 2/11  be_1r 1/11  atr1.0 5/11  atr1.5 5/11  swing 2/11  hybrid 4/11
+exit reasons: fixed {'stop': np.int64(9), 'target': np.int64(2)}  be_1r {'stop': np.int64(5), 'trail': np.int64(5), 'target': np.int64(1)}  atr1.0 {'trail': np.int64(7), 'stop': np.int64(3), 'target': np.int64(1)}  atr1.5 {'trail': np.int64(6), 'stop': np.int64(4), 'target': np.int64(1)}  swing {'stop': np.int64(6), 'trail': np.int64(3), 'target': np.int64(2)}  hybrid {'trail': np.int64(6), 'stop': np.int64(5)}
+
+best trailing rule: atr1.0 at +10.25 R vs fixed +3.71 R (the human's benchmark, §5)
+
+the structural number: trades whose favourable excursion reached +1 R BEFORE the fixed stop fired: 6 of 11
+  median favourable excursion before the stop: +1.27 R;  after it: +3.14 R;  T1 printed later on 6 of 11
+  a trailing stop only tightens, so nothing that starts from the wick stop can reach an excursion that
+  arrives after that stop has fired — the rules above can only differ from 'fixed' on the trades where
+  price first went the trade's way
+
+excluded from the baseline (no wick stop to trail from):
+  NQ 5m 2026-05-26: no valid wick stop (risk <= 0); round 2 admitted it under atr1.0 only
+  NQ 1m 2026-08-31: no valid wick stop (risk <= 0); round 2 admitted it under atr1.0 only
+
+
+ROUND-1 TRADES (8), split by whether T1 printed later in the session
+
+  T1 printed after the stop — 4 trades
+  day         inst  S     entry      stop   risk stop hit    MAE  mfe>stop  T1 later  atr1.0
+  2026-05-15  NQ    L  29188.00  29174.10   4.8b    09:50  -1.78    +21.49 yes 14:05   -1.00
+  2026-05-19  NQ    L  28893.00  28833.14  20.7b    10:05  -2.08     +3.90 yes 13:20   -0.29
+  2026-08-28  NQ    L  29616.00  29553.70  21.0b    10:10  -1.78     +3.14 yes 10:20   +0.22
+  2026-07-15  ES    S   7612.50   7620.24  10.2b    10:00  -1.20     +5.27 yes 11:15   -0.26
+
+  T1 never printed — 4 trades
+  day         inst  S     entry      stop   risk stop hit    MAE  mfe>stop  T1 later  atr1.0
+  2026-05-12  NQ    L  29164.75  29130.98  11.6b    09:55  -1.63     +1.88        no   -1.00
+  2026-05-28  NQ    S  30028.75  30036.28   2.5b    10:05  -2.36     +2.99        no   -1.00
+  2026-06-08  NQ    S  29535.50  29599.91  21.8b    10:35  -1.06     +2.46        no   +0.52
+  2026-06-16  NQ    L  30792.50  30740.35  16.9b    10:15  -1.20     -0.41        no   +0.45
+
+  median favourable excursion after the stop, round-1 trades: +3.06 R (the round-1 write-up said 3.4 R over 5 of 8; that measured the ET calendar date and so included the
+  next session's evening bars — see excursions())

@@ -215,11 +215,19 @@ between −1.0 and −2.3 Sharpe. The best of 32 trials is the one that never fi
 ```
 stop distance      median 14.3 bps  = 0.94 ATR of one 5-minute bar
 stopped on the entry bar             3 of 8
-target printed later the same day    5 of 8
-best excursion in the trade's favour median 3.4 R — after the stop had fired
+target printed later the same session (by 15:55)   4 of 8
+best excursion in the trade's favour after the stop, median   3.1 R
 ```
 
-The direction call — sweep, then a run to the next pool — was right five times
+*(Corrected 2026-09-12. As first written this said 5 of 8 and 3.4 R. The
+script that produced those masked "the rest of the session" on the ET
+calendar date, which includes the 18:00–23:55 evening bars of the next
+session; bounded to the trading session and the 15:55 flat, which is the only
+window an exit rule could act in, it is 4 of 8 and 3.1 R. See
+`tjr_trailing_benchmark.py`, `excursions()`. The finding stands; the numbers
+are smaller.)*
+
+The direction call — sweep, then a run to the next pool — was right four times
 in eight. The stop rule, "beyond the sweep wick", places the stop inside the
 range of a single 5-minute bar, so the retrace that fills the zone routinely
 runs through it before the move the setup predicted. This is precisely the
@@ -281,9 +289,10 @@ three.
 He specifies 1-minute bars for confirmation and entry; round 1 ran everything
 on 5-minute bars and found that the displacement leg (two or three 5-minute
 bars) never leaves a gap, so every entry was an inverted FVG. And round 1's
-geometry — direction right 5 of 8, median excursion 3.4 R *after* the stop
-fired, stop inside one bar's range — points at exactly one variable: how far
-the stop sits. Both are tested here; nothing else changes.
+geometry — direction right on half the trades, median excursion about 3 R
+*after* the stop fired (5 of 8 and 3.4 R as first written; corrected in §9),
+stop inside one bar's range — points at exactly one variable: how far the
+stop sits. Both are tested here; nothing else changes.
 
 ### 11.2 Data
 
@@ -437,8 +446,9 @@ recorded, and are not evidence either way. The 5-minute half keeps its 149.
 
 Widening the stop admits one extra NQ trade (the wick rule had rejected it as
 no-risk) and turns exactly one loss into a win; the other seven still stop.
-On ES only `session` rescues the single trade. The 3.4 R excursion round 1
-measured was real, but a fixed-multiple stop cannot buy it: every widening
+On ES only `session` rescues the single trade. The post-stop excursion round 1
+measured was real (about 3 R at the median once bounded to the session — §9),
+but a fixed-multiple stop cannot buy it: every widening
 shrinks reward-to-risk faster than it adds wins, and total R gets *worse* from
 1.0 to 2.0 ATR. All eight 5-minute gauntlet runs fail every gate that measures
 an edge, as in round 1.

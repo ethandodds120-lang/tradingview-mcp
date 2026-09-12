@@ -137,6 +137,34 @@ gauntlet, living in `quantlab/`. `run.py` is the gauntlet CLI, `paper.py` the
 forward-test CLI. The MCP layer is one of its bar sources (`--tv-symbol`), nothing
 more — orders never go out through TradingView.
 
+## Standing rules (read these first, every session)
+
+1. **Paper only. Never route real capital.** Live routing stays behind `--live`
+   + `allow_live` and is never enabled on anyone's initiative but the user's,
+   in writing.
+2. **Every strategy clears the gauntlet before deployment.** No exceptions for
+   "just a paper run": a paper run is a deployment.
+3. **The trial count is cumulative and lives in the repo.** Every grid cell,
+   variant, instrument and round that ever had a chance to look good is
+   counted; the deflated Sharpe is computed against that count, never against
+   one run's grid. `DESIGN-*.md` states the count; the search scripts pool it.
+4. **Folklore-tagged strategies never deploy without clearing.** `folklore`
+   means untested here; it is the reason the harness exists, not a waiver.
+5. **Dry-run and show numbers before enabling anything on the VPS.** Nothing
+   is started, stopped, written to `book.json`, appended to a journal, or
+   installed as a unit on the box until the user has seen the read-only
+   output and said go.
+6. **`TICKETS.md` is the queue.** Do not reorder it without asking. Close a
+   ticket by deleting it when the commit that fixes it lands.
+7. **`DESIGN-*.md` and `RESEARCH-strategies.md` are the record.** Contracts are
+   written before code, deviations are recorded in them, and findings go in
+   them — not in chat, not in commit messages alone.
+8. **Pre-registered means fixed.** Sample sizes, pass bars and trial counts do
+   not change once data has been looked at. If a test needs a third round, it
+   needed a better first one.
+9. **The box runs unattended; the box does the telling.** Alerts come from
+   the VPS, not from a chat session. Never promise to "watch" anything.
+
 ## The two families
 
 Strategies are split by **what kind of claim they make**. This is encoded, not
