@@ -232,3 +232,10 @@ Paper trading makes losses free. It does not make these free:
   gate exists precisely so that flipping it has to be deliberate.
 - **One machine polls a given run.** Two pollers means two divergent state files
   and duplicate orders.
+
+## Agreed next work
+
+Sequenced in `TICKETS.md`: kill rules, then the bootstrap-band fix, then the
+incubation gate, then heartbeat with push alerts from the VPS, then the
+strategy search. Nothing there starts until the 2026-09-12 deploy has run
+quietly.
