@@ -291,6 +291,33 @@ record `at` − `latency_s` (`2026-09-09T06:50:43.84+00:00`), `lag_s` =
 slippage 30.7, total 114.8, assumed 25.0, excess 89.8. `report --execution`
 includes it.
 
+## Verified on paper only
+
+Two behaviours this design leans on were exercised against Alpaca's paper
+endpoint on 2026-09-12 and are **not settled** for a live venue. Neither may be
+treated as confirmed until it has been observed live.
+
+1. **`pending_cancel` before `canceled`.** The fallback must not fire until a
+   cancel is confirmed, and the code re-queries until it sees a terminal status.
+   On paper the cancel completed synchronously: the limit went straight from
+   `new` to `canceled` and `pending_cancel` never appeared, so the guard has
+   never actually been exercised by the venue. A live venue can hold an order
+   in `pending_cancel` while it still fills; that is the double-fill this guard
+   exists to prevent, and it is exactly the state paper never showed us.
+2. **Whole-share market-on-open status flow.** A 1-share OPG on F submitted at
+   05:02 UTC on a Saturday was `accepted` and stayed queued through a reboot,
+   and was found again by client order id. It has **not yet filled**; the fill
+   can only happen at the next opening auction (Monday 2026-09-14, 13:30 UTC).
+   Until then the accepted → filled transition, the fill price against the
+   open, and what `resolve()` sees during the auction are unobserved. No live
+   run routes on-open orders today; the first one that does inherits this.
+
+Also observed and worth remembering: Alpaca's crypto quote can be one to two
+minutes old (its book updates only when its own book changes), so `arrival_mid`
+on a crypto fill carries `age_s`; and paper fills sometimes improve on the
+limit (a buy limited at the ask filled 19 bps inside it), which a live venue
+will not reliably do.
+
 ## 11. Dry-run
 
 `paper.py poll --id X --dry-run` fetches bars, applies §1, processes new bars in
