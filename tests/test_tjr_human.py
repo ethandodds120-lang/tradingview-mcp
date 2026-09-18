@@ -2227,7 +2227,7 @@ if key == "pane focus":
     out({"success": True, "focused_index": int(args[2])})
 if args[:1] == ["state"]:
     p = panes[st.get("active", 0)]
-    out({"success": True, "symbol": p["symbol"], "resolution": p["resolution"]})
+    out({"success": True, "symbol": p["symbol"], "resolution": p["resolution"], "chartType": p.get("style")})
 if args[:1] == ["ohlcv"]:
     n = int(args[args.index("-n") + 1])
     rows = bars(panes[st.get("active", 0)]["symbol"], n)
@@ -2236,6 +2236,7 @@ if key == "ui eval":
     assert "/*tjr_human:panes*/" in args[2]
     n = int(args[2].split("var n=")[1].split(";")[0])
     out({"success": True, "result": {"panes": [{"index": i, "symbol": p["symbol"], "resolution": p["resolution"],
+                                                "style": p.get("style"),
                                                 "bars": bars(p["symbol"], n)} for i, p in enumerate(panes)]}})
 if key == "draw shape":
     out({"success": True, "entity_id": "shape%d" % int(time.time() * 1e6)})
@@ -2310,8 +2311,12 @@ def warm_frames() -> dict:
     return _cache["warm"]
 
 
-def live_setup(frames: dict, cut: int, method="eval", timeout=20.0, **kw):
-    """A runner on the fake CLI: stores hold frames[:cut]; the clock stands 5 s into the minute after the newest served bar."""
+HAND_TICKS = {"NQ": 0.05, "ES": 0.05}       # the hand-built days are written in steps of 0.05, not on the 0.25 grid
+
+
+def live_setup(frames: dict, cut: int, method="eval", timeout=20.0, ticks=None, **kw):
+    """A runner on the fake CLI: stores hold frames[:cut]; the clock stands 5 s into the minute after the newest served bar.
+    `ticks`: the price grid `check_batch` holds the fetched bars to (default: the contract's 0.25)."""
     tv = FakeTv()
     base = tempfile.mkdtemp(prefix="tjrh_live_")
     stores = {}
@@ -2321,7 +2326,7 @@ def live_setup(frames: dict, cut: int, method="eval", timeout=20.0, **kw):
         RUN._write_frame(path, f.iloc[:cut])
         stores[i] = RUN.BarStore(path)
     cli = tv.cli(timeout)
-    feed = RUN.LiveTvFeed(cli, method=method)
+    feed = RUN.LiveTvFeed(cli, method=method, ticks=ticks)
     clock = Clock(0.0)
     sent = []
     runner = RUN.Runner(base, feed, instruments=tuple(frames), clock=clock, sleep=clock.sleep, stores=stores,
@@ -2744,7 +2749,11 @@ def test_live_feed_closed_bar_rule_store_merge_both_methods():
             else:
                 assert set(calls) == {"replay status", "pane list", "pane focus", "state", "ohlcv -n"} and calls.count("pane focus") == 6
             kinds = collections.Counter(r["kind"] for r in JN.read_journal(ls.base))
-            assert kinds["run"] == 1 and kinds.get("feed", 0) == 0
+            runs = [r for r in JN.read_journal(ls.base) if r["kind"] == "run"]
+            assert [(r["what"], r.get("part")) for r in runs] == [("start", None), ("liveness", "alive"),
+                                                                  ("liveness", "terminal")] and kinds.get("feed", 0) == 0
+            status = [t for k, t, _ in ls.sent if k == "status"]                     # three polls: said once each
+            assert len(status) == 2 and "ALIVE" in status[0] and "warm yes" in status[0] and "no fill" in status[1]
             start = [r for r in JN.read_journal(ls.base) if r["kind"] == "run"][0]
             assert start["mode"] == "observe" and start["feed"] == "tradingview" and start["method"] == method
             assert start["warm"]["NQ"]["ok"] and start["telegram_configured"] is False and start["inbound_thread"] is False
@@ -2914,7 +2923,7 @@ def test_live_loop_observe_then_arm_signal_fill_commands_chart_and_no_network():
     frames = {"NQ": df}
     cut = df.index.get_loc(pd.Timestamp(utc("09:20")))
     stop_at = df.index.get_loc(pd.Timestamp(utc("16:05")))
-    ls = live_setup(frames, cut, allow_cold=True)
+    ls = live_setup(frames, cut, allow_cold=True, ticks=HAND_TICKS)
     saved = {k: os.environ.pop(k, None) for k in (A.TOKEN_VAR, A.CHAT_VAR)}
     real_post, real_fetch = A._post, C._fetch
 
@@ -2964,7 +2973,15 @@ def test_live_loop_observe_then_arm_signal_fill_commands_chart_and_no_network():
         assert near(t["r"], (102.0 - 99.7 - 0.5e-4 * 99.7) / (99.7 - f["stops"]["session"]))
         # the pushes: signal with everything 3.2 draws + indicative stops; fill with exact stops + the deadline; replies
         kinds = [k for k, _, _ in ls.sent]
-        assert set(kinds) == {"signal", "trade", "reply"}
+        assert set(kinds) == {"signal", "trade", "reply", "status"}
+        # "trade" is the fill, the stop set and the exit — nothing else; liveness is "status": ALIVE once at the
+        # first poll from 09:25 ET (observe then: `arm` came at 09:31), and no 10:10 line — the instrument filled
+        assert all(("FILL" in t) or ("STOP SET" in t) or ("EXIT" in t) for k, t, _ in ls.sent if k == "trade")
+        status = [t for k, t, _ in ls.sent if k == "status"]
+        # (this loop's first poll at or after 09:25 is the 09:30 one; the hand-built store is two sessions: not warm)
+        assert len(status) == 1 and "ALIVE 2026-07-15 09:30 ET" in status[0] and "OBSERVE" in status[0], status
+        assert "filled 0 of 100" in status[0] and "NQ: store to 13:29Z, 0 trading min behind, warm NO" in status[0]
+        assert not re.search(r"[+-]\d+(\.\d+)?\s*R\b|p&l|pnl", " ".join(status), re.I)
         sig = [(txt, fl) for k, txt, fl in ls.sent if k == "signal"][0]
         for key in ("levels", "level", "extreme", "sweep_bar_time", "conf_types", "conf_time", "zone", "stops_indicative",
                     "t1", "t2", "targets", "target_rule", "ref_price", "atr", "side"):
@@ -3015,7 +3032,7 @@ def test_with_telegram_unset_nothing_tries_the_network_and_the_runner_still_jour
         clock = Clock(0.0)
         stores = {"NQ": RUN.BarStore(os.path.join(base, "store", "NQ_1min.csv"), frame=df.iloc[:cut])}
         RUN.arm(base, "test", now=float(df.index[cut].value) / 1e9, git=_git())
-        r = RUN.Runner(base, RUN.LiveTvFeed(tv.cli()), instruments=("NQ",), clock=clock, sleep=clock.sleep,
+        r = RUN.Runner(base, RUN.LiveTvFeed(tv.cli(), ticks=HAND_TICKS), instruments=("NQ",), clock=clock, sleep=clock.sleep,
                        stores=stores, allow_cold=True, background=False, log=lambda line: None)
         assert isinstance(r.inbound, C.TelegramInbound) and r.mgr.armed
         ls = SimpleNamespace(tv=tv, clock=clock)
@@ -3029,11 +3046,13 @@ def test_with_telegram_unset_nothing_tries_the_network_and_the_runner_still_jour
         assert hits == []
         recs = JN.read_journal(base)
         kinds = collections.Counter(x["kind"] for x in recs)
-        assert kinds["signal"] == 1 and kinds["fill"] == 2 and kinds["run"] == 2 and JN.integrity(base)["ok"]
+        assert kinds["signal"] == 1 and kinds["fill"] == 2 and JN.integrity(base)["ok"]
+        assert [x["what"] for x in recs if x["kind"] == "run"] == ["start", "liveness", "stop"]
         start = [x for x in recs if x["kind"] == "run"][0]
         assert start["telegram_configured"] is False and start["inbound_thread"] is False and start["mode"] == "armed"
         log = open(os.path.join(base, "alerts.log"), encoding="utf-8").read()
         assert "[signal]" in log and "[trade]" in log and "SIGNAL long" in err.getvalue()   # logged, not pushed
+        assert "[status] tjr_human ALIVE 2026-07-15" in log
         assert "STOP accepted until" in log and "13:55:00 UTC" in log                        # the fill carries the 60 s deadline
     finally:
         A._post, C._fetch = real_post, real_fetch
@@ -3060,7 +3079,7 @@ def test_restart_mid_trade_restores_from_the_store_and_never_enters_an_old_day()
 
     def run(died_hm: str):
         died = df.index.get_loc(pd.Timestamp(utc(died_hm)))
-        ls = live_setup(frames, cut, allow_cold=True)
+        ls = live_setup(frames, cut, allow_cold=True, ticks=HAND_TICKS)
         note = lambda b, kind, text, fields=None: ls.sent.append((kind, text, fields)) or {}       # noqa: E731
         RUN.arm(ls.base, "test", now=float(df.index[cut].value) / 1e9 - 600, git=_git())
         mk = lambda stores: RUN.Runner(ls.base, ls.feed, instruments=("NQ",), clock=ls.clock, sleep=ls.clock.sleep,   # noqa: E731
@@ -3090,14 +3109,25 @@ def test_restart_mid_trade_restores_from_the_store_and_never_enters_an_old_day()
         st = JN.rebuild(recs)
         assert st["gaps"][-1]["open_trades"] == ["NQ-2026-07-15"] and st["gaps"][-1]["seconds"] > 86000
         t = st["trades"][0]
-        assert st["filled"] == 1 and t["closed"] and t["exit_reason"] == "target" and t["exit"]["exit_bar"] == utc("10:30")
+        # item 2: a trade a crash left open is closed by replaying the stored bars of ITS session against the stop in
+        # force, the target and the 15:55 flat — reason restart_replay, which of the three in `replayed_reason`,
+        # and the record says the human had no chance to act
+        assert st["filled"] == 1 and t["closed"] and t["exit_reason"] == "restart_replay"
+        assert t["exit"]["replayed_reason"] == "target" and t["exit"]["exit_bar"] == utc("10:30")
+        assert t["exit"]["human_could_act"] is False and "no chance to act" in t["exit"]["note"]
         assert t["complete"] and near(t["r"], t["benchmarks"]["exits"]["wick_fixed"]["r"], 1e-12)
         kinds = collections.Counter(x["kind"] for x in recs)
         assert kinds["signal"] == 1 and kinds["fill"] == 2 and kinds["benchmarks"] == 1 and kinds["exit"] == 1
         start2 = [x for x in recs if x["kind"] == "run" and x["what"] == "start"][1]
         assert start2["re_fed_from"] == "2026-07-15" and start2["today"] == "2026-07-16" and start2["mode"] == "armed"
-        new = [txt for _, txt, _ in ls.sent[n_sent:]]
-        assert len(new) == 1 and "EXIT target" in new[0] and "LATE" in new[0], new      # told once, and told it is late
+        assert start2["abandoned_trades"] == {"NQ": [{"setup_id": "NQ-2026-07-15", "day": "2026-07-15",
+                                                      "entry_bar": utc("09:54")}]}
+        assert any("has no exit" in w and "restart_replay" in w for w in start2["warnings"])
+        new = [txt for k, txt, _ in ls.sent[n_sent:] if k != "status"]
+        assert len(new) == 1 and "EXIT restart_replay (target)" in new[0] and "LATE" in new[0] \
+            and "no chance to act" in new[0], new                                       # told once, and told it is late
+        status = [txt for k, txt, _ in ls.sent[n_sent:] if k == "status"]
+        assert len(status) == 2 and "ALIVE 2026-07-16" in status[0] and "no fill: NQ: no_sweep" in status[1], status
         assert JN.integrity(ls.base)["ok"]
     finally:
         live_close(ls)
@@ -3109,7 +3139,8 @@ def test_restart_mid_trade_restores_from_the_store_and_never_enters_an_old_day()
         st = JN.rebuild(recs)
         assert st["gaps"][-1]["setups_waiting"] == ["NQ-2026-07-15"] and st["gaps"][-1]["open_trades"] == []
         assert st["filled"] == 0 and not [x for x in recs if x["kind"] in ("fill", "exit", "benchmarks")]
-        assert ls.sent[n_sent:] == []
+        assert [k for k, _, _ in ls.sent[n_sent:]] == ["status", "status"]              # alive, and today's 10:10 line
+        assert [x for x in recs if x["kind"] == "run" and x["what"] == "start"][1]["abandoned_trades"] == {}
         assert len(RUN.BarStore(ls.stores["NQ"].path).frame) == back              # the store has the bars all the same
     finally:
         live_close(ls)
@@ -3200,7 +3231,9 @@ def test_run_live_waits_the_poll_interval_answers_commands_between_polls_and_sur
         r.run_live(max_cycles=5)
         gaps = [round(b - a, 1) for a, b in zip(feed.at, feed.at[1:])]
         assert gaps == [60.0, 60.0, 5.0, 5.0], gaps                           # slow until 09:25 ET, then every 5 s
-        assert [k for k, _ in sent] == ["reply"] and "no" in sent[0][1].lower()
+        assert [k for k, _ in sent] == ["reply", "status"] and "no" in sent[0][1].lower()
+        # the first poll at or after 09:25 ET says ALIVE — and how far behind the store is (this feed brings nothing)
+        assert "ALIVE 2026-07-15 09:25 ET" in sent[1][1] and "2 trading min behind" in sent[1][1]
         recs = JN.read_journal(base)
         assert [x["why"] for x in recs if x["kind"] == "reject"] == ["no_setup"]
         cmd_ts = [x["ts_ms"] for x in recs if x["kind"] == "command"][0] / 1000.0
@@ -3213,7 +3246,8 @@ def test_run_live_waits_the_poll_interval_answers_commands_between_polls_and_sur
         feeds = [x for x in JN.read_journal(base) if x["kind"] == "feed"]
         assert len(feeds) == 1 and "a bug in a feed" in feeds[0]["error"] and feeds[0]["what"] == "failure"
         assert r2.facts["cycles"] == 3 and r2.facts["feed_failures"] == 3
-        assert [x["what"] for x in JN.read_journal(base) if x["kind"] == "run"] == ["start", "stop", "start", "stop"]
+        # ALIVE is once per trading day, across a restart too: the second run reads it from the journal
+        assert [x["what"] for x in JN.read_journal(base) if x["kind"] == "run"] == ["start", "liveness", "stop", "start", "stop"]
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
@@ -3374,7 +3408,8 @@ def test_malformed_token_turns_telegram_off_and_is_never_echoed():
         for bad in (FAKE_TOKEN + "\r", FAKE_TOKEN + "\n", " " + FAKE_TOKEN, FAKE_TOKEN + "\r\n"):
             os.environ[A.TOKEN_VAR] = bad
             assert C.telegram_problem() and "malformed" in C.telegram_problem() and FAKE_TOKEN not in C.telegram_problem()
-            assert C.malformed() and not C.configured() and A.configured()   # alerts.py itself would try to push
+            assert C.malformed() and not C.configured() and not A.configured()   # alerts.py itself is OFF too (T-4)
+            assert A.token_problem() == C.telegram_problem().replace(" — Telegram is OFF", "")   # one validation, imported
         os.environ[A.TOKEN_VAR] = FAKE_TOKEN + "\r"
         C._fetch = lambda *a, **k: calls.append("fetch") or (200, "{}")
         A._post = lambda *a, **k: calls.append("post") or (200, "{}")
@@ -3501,11 +3536,19 @@ def test_failing_getupdates_is_never_silent_and_an_unjournaled_update_is_kept():
             r.stop()
             feeds = [x for x in JN.read_journal(base) if x["kind"] == "feed"]
             assert [x["what"] for x in feeds] == ["failure", "recovered"] and feeds[1]["failures"] == 4
+            sent = no_liveness(sent)
             assert len(sent) == pushes and r.facts["feed_failures"] == 0
             if pushes:
-                assert sent[0][0] == "trade" and "NOT being received" in sent[0][1] and "RECOVERED" in sent[1][1]
+                assert sent[0][0] == "status" and "NOT being received" in sent[0][1] and "RECOVERED" in sent[1][1]
+                assert sent[1][0] == "status"
         finally:
             shutil.rmtree(base, ignore_errors=True)
+
+
+def no_liveness(sent: list) -> list:
+    """What was pushed, without the daily liveness lines (ALIVE at 09:25 ET, the 10:10 line): they are said on
+    every trading day by design and have their own test; the tests below count what ELSE reached the phone."""
+    return [x for x in sent if not (x[0] == "status" and ("tjr_human ALIVE " in x[1] or " ET — no fill: " in x[1]))]
 
 
 class MemFeed:
@@ -3778,7 +3821,7 @@ def test_feed_failures_reach_the_phone_once_and_cycle_errors_are_not_per_poll():
             told = [t for k, t in sent if "FAILING" in t or "RECOVERED" in t]
             if want_push:
                 assert len(told) == 2 and "no pane shows NQ1!" in told[0] and "no signal can be detected" in told[0]
-                assert all(k == "trade" for k, t in sent if t in told)
+                assert all(k == "status" for k, t in sent if t in told)
             else:
                 assert told == []
             # the store csv held by another program: a feed failure of that instrument, not an exception
@@ -3811,7 +3854,7 @@ def test_feed_failures_reach_the_phone_once_and_cycle_errors_are_not_per_poll():
         r._close_sessions = broken
         r.run_live(max_cycles=9)
         runs = [x["what"] for x in JN.read_journal(base) if x["kind"] == "run"]
-        assert runs == ["start", "cycle_error", "cycle_recovered", "stop"], runs
+        assert [w for w in runs if w != "liveness"] == ["start", "cycle_error", "cycle_recovered", "stop"], runs
         told = [t for k, t in sent if "FAILING" in t or "RECOVERED" in t]
         assert len(told) == 2 and "inside a cycle" in told[0]
     finally:
@@ -4059,7 +4102,8 @@ def test_a_frozen_chart_is_a_feed_failure_journaled_and_pushed_not_silence():
         fail = [t for k, t in sent if "FAILING" in t]
         assert len(fail) == 1 and "STALLED" in fail[0] and "PC clock is fast" in fail[0] and "stops and targets" in fail[0]
         assert len([t for k, t in sent if "RECOVERED" in t]) == 1
-        assert all(k == "trade" for k, t in sent if "FAILING" in t or "RECOVERED" in t)
+        assert all(k == "status" for k, t in sent if "FAILING" in t or "RECOVERED" in t)
+        assert all(("FILL" in t) or ("STOP SET" in t) or ("EXIT" in t) for k, t in sent if k == "trade")
         sig = [t for k, t in sent if k == "signal"]
         assert len(sig) == 1 and sig[0].startswith("[LATE")               # the 09:40 signal, told late and said so
         assert JN.filled_count(recs) == 1 and r.facts["feed_failures"] >= 1
@@ -4077,7 +4121,7 @@ def test_a_frozen_chart_is_a_feed_failure_journaled_and_pushed_not_silence():
             r.cycle_live()
         recs = [x for x in JN.read_journal(base) if x["kind"] == "feed"]
         assert [(x["what"], x["scope"]) for x in recs] == [("failure", "NQ"), ("still_failing", "NQ"), ("still_failing", "NQ")]
-        assert sent == []
+        assert no_liveness(sent) == []
         # while it is stalled the stale forming bar is not a price: a pending entry is not previewed on it
         r._pending["NQ"] = r.feed.cycle(clock(), {})["NQ"].forming["time"]
         r.cycle_live()
@@ -4116,19 +4160,21 @@ def test_a_wrong_pc_clock_is_refused_at_the_start_and_told_when_it_drifts():
         r, feed = _live(base, ShiftedFeed, clock, build_day(), "11:58", sent)      # an inert day: nothing is on
         r.start_live()
         r.cycle_live()
-        assert sent == [] and not r._failing
+        assert no_liveness(sent) == [] and not r._failing
         feed.offset = -200.0                                              # PC clock 200 s slow: the chart is "in the future"
         for _ in range(3):
             clock.sleep(60)
             r.cycle_live()
         runs = [x for x in JN.read_journal(base) if x["kind"] == "run" and str(x["what"]).startswith("clock")]
         assert [x["what"] for x in runs] == ["clock_suspect"] and -200.0 <= runs[0]["skew_s"] <= -140.0, runs
-        assert len(sent) == 1 and sent[0][0] == "trade" and "PC CLOCK is suspect" in sent[0][1] and "BEHIND" in sent[0][1]
+        told = no_liveness(sent)
+        assert len(told) == 1 and told[0][0] == "status" and "PC CLOCK is suspect" in told[0][1] and "BEHIND" in told[0][1]
         feed.offset = 0.0
         clock.sleep(60)
         r.cycle_live()
         runs = [x["what"] for x in JN.read_journal(base) if x["kind"] == "run" and str(x["what"]).startswith("clock")]
-        assert runs == ["clock_suspect", "clock_recovered"] and "RECOVERED: clock" in sent[-1][1] and len(sent) == 2
+        told = no_liveness(sent)
+        assert runs == ["clock_suspect", "clock_recovered"] and "RECOVERED: clock" in told[-1][1] and len(told) == 2
         # Telegram's own message date is the second witness: dated after its receipt = the PC clock is slow
         now = clock()
         r._command(_dated("skip", now + 40.0), now)
@@ -4136,8 +4182,9 @@ def test_a_wrong_pc_clock_is_refused_at_the_start_and_told_when_it_drifts():
         assert runs[-1]["what"] == "clock_suspect" and runs[-1]["skew_s"] == -40.0 and "AFTER" in runs[-1]["error"]
         r._command(_dated("skip", now - 2.0), now)
         assert "clock" not in r._failing
+        assert r._started_at < now - 130.0                                # (sent AFTER the start: a startup backlog is no witness)
         for k in range(2):                                                # two stale commands in a row: fast clock or slow delivery
-            r._command(_dated("skip", now - 500.0), now)
+            r._command(_dated("skip", now - 130.0), now)
             assert ("clock" in r._failing) == (k == 1)
         rej = [x["why"] for x in JN.read_journal(base) if x["kind"] == "reject"]
         assert rej.count("stale") == 2
@@ -4168,7 +4215,9 @@ def test_a_hole_that_opens_mid_run_is_pushed_and_the_day_is_not_traded_until_a_p
             holes = [t for k, t in sent if "HOLE in the 1-minute store" in t]
             days = [t for k, t in sent if "NOT traded" in t]
             assert len(holes) == (1 if hole_pushed else 0) and len(days) == 1 and "--accept-holes" in days[0]
-            assert all(k == "trade" for k, t in sent)
+            assert all(k == "status" for k, t in sent)
+            # the 10:10 line says why nothing happened on a day like this — not silence
+            assert [t for k, t in sent if " ET — no fill: " in t and "NQ: not routed today" in t]
             assert not [x for x in recs if x["kind"] in ("signal", "fill", "observe", "event")]   # the day was not routed
             assert JN.entered_count(recs) == 0 and r.facts["events"]["NQ"].get("signal") == 1    # the detector saw it
             r.stop()
@@ -4206,6 +4255,761 @@ def test_the_live_loop_asks_windows_to_stay_awake_and_says_so():
         assert calls == [True, False]                                       # asked, and undone; never asked when told not to
     finally:
         RUN.keep_awake = real
+        shutil.rmtree(base, ignore_errors=True)
+
+
+# ────────────────────────────── 21. after the review of the committed build ──────────────────────────────
+
+NO_RESULT = re.compile(r"win rate|p&l|pnl|sharpe|expectancy|[+-]\s?\d+(?:\.\d+)?\s?R\b", re.I)
+
+
+def _late_skip_run(sent_hms: str, deliver_hms: str, until: str = "16:01"):
+    """The hand-built long day on the LIVE path (the fill is known at 09:54:05, provisional; the closed entry bar
+    confirms it at 09:55:05). A SKIP dated `sent_hms` by Telegram is DELIVERED at `deliver_hms`."""
+    base = tempfile.mkdtemp(prefix="tjrh_lateskip_")
+    inbound, done = ScriptedInbound(), []
+
+    def hook(r, now):
+        r.inbound = inbound
+        if not done and now >= at(deliver_hms):
+            done.append(now)
+            inbound.box.append(_dated("skip noise", at(sent_hms)))
+    r, sent, errors = _mem_run(base, until=until, hook=hook)
+    assert not errors and done, errors
+    return base, JN.read_journal(base), sent
+
+
+def test_skip_dated_before_the_fill_is_honoured_when_delivered_after_it_same_clock_as_stop():
+    """SKIP was judged by receipt, STOP by message time. One clock now: the message date when it is not later than
+    the receipt. Dated BEFORE the fill time and delivered AFTER the provisional fill: the fill is void, the setup is
+    a skip — followed to the end, benchmarked as a skip — and both times are in the record."""
+    base, recs, sent = _late_skip_run("09:53:50", "09:54:35")
+    try:
+        st = JN.rebuild(recs)
+        fills = [x for x in recs if x["kind"] == "fill"]
+        assert [x["provisional"] for x in fills] == [True]                   # the entry HAD been taken, provisionally
+        skips = [x for x in recs if x["kind"] == "skip"]
+        assert [x["stage"] for x in skips] == ["command", "would_fill"]
+        k = skips[0]
+        assert k["after_fill"] is True and k["seq"] > fills[0]["seq"] and k["human_reason"] == "noise"
+        assert k["message_time"] == JN.iso_ms(at("09:53:50")) and k["received_time"] == JN.iso_ms(at("09:54:35"))
+        assert k["fill_time"] == JN.iso_ms(at("09:54:00")) and k["seconds_before_fill"] == 10.0 and k["delivery_s"] == 45.0
+        assert k["t_cmd"] == at("09:53:50") and k["voided_fill"]["provisional"] is True and k["voided_exit_seq"] is None
+        assert st["filled"] == 0 and st["trades"] == [] and JN.entered_count(recs) == 0
+        assert not [x for x in recs if x["kind"] in ("exit", "reject")]
+        sk = st["skipped"]
+        assert len(sk) == 1 and sk[0]["would_fill"] and sk[0]["reason"] == "noise" and sk[0]["entry"] == 99.7
+        assert sk[0]["benchmarks"] is not None and sk[0]["benchmarks"]["skipped"] is True
+        assert "human" not in sk[0]["benchmarks"] and set(X.EXIT_NAMES) <= set(sk[0]["benchmarks"]["exits"])
+        said = [t for k_, t in sent if k_ == "reply"]
+        assert len(said) == 1 and "VOID" in said[0] and "13:53:50 UTC" in said[0] and "13:54:00 UTC" in said[0]
+        assert "45 s later" in said[0]
+        assert [t for k_, t in sent if k_ == "trade" and "FILL" in t] and not [t for k_, t in sent if "EXIT" in t]
+        assert JN.integrity(base)["ok"]
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+    # delivered after the CLOSED entry bar had confirmed the fill (105 s: inside the stale limit): the same rule —
+    # and the confirmed fill is what the skip would have filled at, journaled at once
+    base, recs, sent = _late_skip_run("09:53:50", "09:55:35")
+    try:
+        st = JN.rebuild(recs)
+        assert [x["provisional"] for x in recs if x["kind"] == "fill"] == [True, False]
+        skips = [x for x in recs if x["kind"] == "skip"]
+        assert [x["stage"] for x in skips] == ["command", "would_fill"] and skips[0]["voided_fill"]["provisional"] is False
+        assert skips[1]["ev"]["entry"] == 99.7 and skips[1]["after_fill"] is True
+        assert st["filled"] == 0 and JN.entered_count(recs) == 0 and len(st["skipped"]) == 1
+        assert st["skipped"][0]["benchmarks"]["skipped"] is True and not [x for x in recs if x["kind"] == "exit"]
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_skip_dated_at_or_after_the_fill_stays_rejected_as_skip_after_fill():
+    for sent_hms in ("09:54:00", "09:54:20"):                                 # AT the fill time is not before it
+        base, recs, sent = _late_skip_run(sent_hms, "09:54:35", until="10:40")
+        try:
+            st = JN.rebuild(recs)
+            rej = [x for x in recs if x["kind"] == "reject"]
+            assert [x["why"] for x in rej] == ["skip_after_fill"] and not [x for x in recs if x["kind"] == "skip"]
+            assert rej[0]["fill_time"] == JN.iso_ms(at("09:54:00")) and rej[0]["message_time"] == JN.iso_ms(at(sent_hms))
+            assert rej[0]["received_time"] == JN.iso_ms(at("09:54:35"))
+            t = st["trades"][0]
+            assert st["filled"] == 1 and t["exit_reason"] == "target" and t["exit"]["exit_bar"] == utc("10:30")
+            assert [t_ for k_, t_ in sent if k_ == "reply" and "REJECTED SKIP" in t_ and "EXIT NOW" in t_]
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+
+
+def _slow_pc_skip_run(sent_hms: str, true_deliver_hms: str, off: float = -60.0, until: str = "10:40"):
+    """The same day on the live path with the PC clock `off` seconds from true time (ShiftedFeed: the bars carry
+    TRUE stamps). A SKIP Telegram dated `sent_hms` (true) reaches the runner at TRUE `true_deliver_hms`."""
+    df = build_day({**FULL_LONG, "10:30": (100.0, 102.4, 99.9, 102.2)}, fill_runs=HIGH_RUN)
+    base = tempfile.mkdtemp(prefix="tjrh_slowpc_")
+    clock, sent = Clock(at("09:21:05") + off), []
+    RUN.arm(base, "test", now=at("08:00"), git=_git())
+    r, feed = _live(base, ShiftedFeed, clock, df, "09:19", sent, feed={"offset": off})
+    inbound, done = ScriptedInbound(), []
+    r.inbound = inbound
+    r.start_live()
+    while clock() - off < at(until):
+        r.inbound = inbound
+        if not done and clock() - off >= at(true_deliver_hms):
+            done.append(clock())
+            inbound.box.append(_dated("skip gut", at(sent_hms)))
+        r.cycle_live()
+        clock.sleep(30 if clock() - off < at("09:53:30") or clock() - off > at("09:56") else 5)
+    r.stop()
+    assert done
+    return base, JN.read_journal(base), sent, done[0]
+
+
+def test_a_slow_pc_clock_never_voids_a_fill_only_telegrams_date_does():
+    """The fill time is a bar stamp (true time). `t_cmd` falls back to the PC's time when Telegram's date is later
+    than the receipt — which is exactly when the PC is slow. Judged on that, a SKIP sent 33 s AFTER the fill read as
+    25 s before it and removed the fill from the 100. A fill is voided on Telegram's own date, never the PC's."""
+    base, recs, sent, pc_rx = _slow_pc_skip_run("09:54:33", "09:54:35")
+    try:
+        st = JN.rebuild(recs)
+        assert pc_rx < at("09:54:00") < at("09:54:33")                     # the PC believed the fill had not happened
+        rej = [x for x in recs if x["kind"] == "reject"]
+        assert [x["why"] for x in rej] == ["skip_after_fill"] and not [x for x in recs if x["kind"] == "skip"]
+        k = rej[0]                                                         # both clocks are in the record
+        assert k["telegram_time"] == JN.iso_ms(at("09:54:33")) == k["message_time"] and k["skip_clock"] == "telegram"
+        assert k["pc_time"] == JN.iso_ms(pc_rx) == k["received_time"] and k["fill_time"] == JN.iso_ms(at("09:54:00"))
+        assert k["pc_clock_behind_s"] == round(at("09:54:33") - pc_rx, 3) and k["pc_clock_behind_s"] > 50
+        assert st["filled"] == 1 and JN.entered_count(recs) == 1 and st["skipped"] == []
+        t = st["trades"][0]
+        assert t["exit_reason"] == "target" and t["exit"]["exit_bar"] == utc("10:30")     # the fill stands, and runs
+        said = [t_ for k_, t_ in sent if k_ == "reply"]
+        assert len(said) == 1 and "REJECTED SKIP" in said[0] and "PC clock is slow" in said[0]
+        assert [t_ for k_, t_ in sent if k_ == "status" and "PC CLOCK" in t_]
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+    # the same slow PC, a SKIP Telegram dated BEFORE the fill and delivered after it: void, on Telegram's date
+    base, recs, sent, pc_rx = _slow_pc_skip_run("09:53:50", "09:54:35")
+    try:
+        st = JN.rebuild(recs)
+        k = [x for x in recs if x["kind"] == "skip" and x["stage"] == "command"][0]
+        assert k["after_fill"] is True and k["t_cmd"] == at("09:53:50") and k["skip_clock"] == "telegram"
+        assert k["telegram_time"] == JN.iso_ms(at("09:53:50")) and k["pc_time"] == JN.iso_ms(pc_rx)
+        assert k["seconds_before_fill"] == 10.0 and k["pc_clock_behind_s"] is not None
+        assert st["filled"] == 0 and JN.entered_count(recs) == 0 and len(st["skipped"]) == 1
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+    # a SKIP with NO Telegram date never voids a fill, whatever the PC's clock says
+    base = tempfile.mkdtemp(prefix="tjrh_slowpc_")
+    try:
+        j = JN.Journal(base, fsync=False)
+        m = TR.TradeManager(j, armed=True)
+        nq = h_fill()
+        m.on_event(h_signal(nq), at("09:41"))
+        m.on_event(h_trigger(nq), at("09:54"))
+        m.on_preview({**nq, "provisional": True}, at("09:53:10"))           # the PC is 55 s slow: it says 09:53:10
+        out = m.on_command(C.parse("nq skip gut"), at("09:53:20"))
+        rj = [x for x in j.records() if x["kind"] == "reject"]
+        assert [x["why"] for x in rj] == ["skip_after_fill"] and rj[0]["skip_clock"] == "pc" and rj[0]["telegram_time"] is None
+        assert "REJECTED SKIP" in out[0]["text"] and JN.entered_count(j.records()) == 1
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_a_skip_that_names_no_instrument_is_routed_on_the_message_clock_not_by_phase_at_receipt():
+    """A bare SKIP went to whichever setup was in the `signal` phase WHEN IT ARRIVED. Sent 10 s before NQ filled and
+    delivered after ES had signalled, it skipped ES — whose signal did not exist when it was sent — and NQ's fill
+    stood in the 100. The candidates are judged on the message's own time."""
+    def setup():
+        base = tempfile.mkdtemp(prefix="tjrh_route_")
+        j = JN.Journal(base, fsync=False)
+        return base, j, TR.TradeManager(j, armed=True)
+    nq, es = h_fill(), h_fill(inst="ES", at_="10:02")
+    # A: dated 09:53:50 (only NQ had a signal), NQ fills 09:54:00, ES knowable 09:55:00, delivered 09:55:10
+    base, j, m = setup()
+    try:
+        m.on_event(h_signal(nq), at("09:41"))
+        m.on_event(h_trigger(nq), at("09:54"))
+        m.on_preview({**nq, "provisional": True}, at("09:54:05"))
+        m.on_event(h_signal(es, "09:54"), at("09:55:00"))
+        out = m.on_command(_dated("skip noise", at("09:53:50")), at("09:55:10"))
+        st = JN.rebuild(j.records())
+        assert out[0]["text"].startswith("NQ SKIPPED") and "VOID" in out[0]["text"]
+        assert [k["setup_id"] for k in st["skipped"]] == [nq["setup_id"]] and JN.entered_count(j.records()) == 0
+        assert st["setups"][es["setup_id"]]["skip"] is None                # ES was never touched
+        # the SAME message dated once both were knowable and neither had filled would be ambiguous — and one dated
+        # AFTER NQ's fill, with ES open at that time, is ES's
+        out = m.on_command(_dated("skip noise", at("09:55:05")), at("09:55:20"))
+        assert out[0]["text"].startswith("ES SKIPPED")
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+    # B: dated before ANY signal was knowable, delivered after the fill: it meant no setup; the fill stands
+    base, j, m = setup()
+    try:
+        m.on_event(h_signal(nq, "09:52"), at("09:53:00"))
+        m.on_event(h_trigger(nq), at("09:54"))
+        m.on_preview({**nq, "provisional": True}, at("09:54:05"))
+        out = m.on_command(_dated("skip noise", at("09:52:30")), at("09:54:20"))
+        rj = [x for x in j.records() if x["kind"] == "reject"]
+        assert [x["why"] for x in rj] == ["no_setup"] and JN.entered_count(j.records()) == 1
+        # ... and NAMING the instrument does not void a fill with a date from before its signal either
+        out = m.on_command(_dated("nq skip noise", at("09:52:40")), at("09:54:25"))
+        assert [x["why"] for x in j.records() if x["kind"] == "reject"] == ["no_setup", "skip_after_fill"]
+        assert JN.entered_count(j.records()) == 1 and not [x for x in j.records() if x["kind"] == "skip"]
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+    # C: both knowable and unfilled at the message's time -> ambiguous, even though NQ has filled by the receipt
+    base, j, m = setup()
+    try:
+        m.on_event(h_signal(nq), at("09:41"))
+        m.on_event(h_signal(es, "09:45"), at("09:46"))
+        m.on_event(h_trigger(nq), at("09:54"))
+        m.on_preview({**nq, "provisional": True}, at("09:54:05"))
+        out = m.on_command(_dated("skip noise", at("09:53:50")), at("09:54:30"))
+        rj = [x for x in j.records() if x["kind"] == "reject"]
+        assert [x["why"] for x in rj] == ["ambiguous_instrument"] and "NQ or ES" in out[0]["text"]
+        assert not [x for x in j.records() if x["kind"] == "skip"] and JN.entered_count(j.records()) == 1
+        # dated after NQ's fill: NQ is no candidate any more, ES is the one
+        out = m.on_command(_dated("skip noise", at("09:54:10")), at("09:54:40"))
+        assert out[0]["text"].startswith("ES SKIPPED") and JN.entered_count(j.records()) == 1
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+    # D: one setup, filled, SKIP dated after the fill: it answers skip_after_fill (not no_setup)
+    base, j, m = setup()
+    try:
+        m.on_event(h_signal(nq), at("09:41"))
+        m.on_event(h_trigger(nq), at("09:54"))
+        m.on_preview({**nq, "provisional": True}, at("09:54:05"))
+        m.on_command(_dated("skip", at("09:54:10")), at("09:54:30"))
+        assert [x["why"] for x in j.records() if x["kind"] == "reject"] == ["skip_after_fill"]
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def _crash_then(restart_store, restart_at: float, **kw):
+    """The hand-built long day on the live path until 10:05 with the trade on; the process dies (no stop record, the OS
+    drops the lock). A new runner starts at `restart_at` on `restart_store(df)`. Returns (base, df, r2, sent2, error)."""
+    df = build_day({**FULL_LONG, "10:30": (100.0, 102.4, 99.9, 102.2)}, fill_runs=HIGH_RUN, extra_days=31)
+    base = tempfile.mkdtemp(prefix="tjrh_crash_")
+    clock = Clock(at("09:21:05"))
+    RUN.arm(base, "test", now=at("08:00"), git=_git())
+    r1 = RUN.Runner(base, MemFeed({"NQ": df}, clock), instruments=("NQ",), clock=clock, sleep=clock.sleep,
+                    allow_cold=True, inbound=None, background=False, log=lambda line: None, notify=False,
+                    stores={"NQ": RUN.BarStore(None, frame=df.loc[:utc("09:19")])})
+    r1.start_live()
+    while clock() < at("10:05:30"):
+        r1.cycle_live()
+        clock.sleep(30)
+    assert JN.rebuild(JN.read_journal(base))["trades"][0]["closed"] is False
+    r1._lock.release()
+    clock2, sent2 = Clock(restart_at), []
+    r2 = RUN.Runner(base, MemFeed({"NQ": df}, clock2), instruments=("NQ",), clock=clock2, sleep=clock2.sleep,
+                    allow_cold=True, inbound=None, background=False, log=lambda line: None,
+                    stores={"NQ": RUN.BarStore(None, frame=restart_store(df))},
+                    notify=lambda b, kind, text, fields=None: sent2.append((kind, text)) or {}, **kw)
+    error = None
+    try:
+        r2.start_live()
+        r2.cycle_live()
+    except RUN.Refused as exc:
+        error = str(exc)
+    return base, df, r2, sent2, error
+
+
+def test_a_trade_left_open_by_a_crash_is_closed_thirty_days_later_never_abandoned_by_age():
+    """It was dropped silently after 7 days, and `close_session` was given the last 20000 rows of the store, which a
+    fill a month back is not in. Now: closed by replaying ITS session (restart_replay), benchmarked on ITS window."""
+    later = DAY + pd.Timedelta(days=30)                                       # Friday 2026-08-14
+    restart = at("11:00:05", later)
+    base, df, r2, sent, error = _crash_then(lambda df: df.loc[:pd.Timestamp(restart - 120, unit="s")], restart)
+    try:
+        assert error is None
+        assert len(r2.stores["NQ"].frame) > 2 * RUN.SESSION_TAIL_ROWS         # the fill is far outside any tail
+        recs = JN.read_journal(base)
+        st = JN.rebuild(recs)
+        t = st["trades"][0]
+        assert st["filled"] == 1 and t["closed"] and t["complete"]
+        assert t["exit_reason"] == "restart_replay" and t["exit"]["replayed_reason"] == "target"
+        assert t["exit"]["exit_bar"] == utc("10:30") and t["exit"]["human_could_act"] is False
+        assert near(t["r"], t["benchmarks"]["exits"]["wick_fixed"]["r"], 1e-12)   # the same bars, the same stop, the same T1
+        start2 = [x for x in recs if x["kind"] == "run" and x["what"] == "start"][1]
+        assert start2["abandoned_trades"] == {"NQ": [{"setup_id": "NQ-2026-07-15", "day": "2026-07-15",
+                                                      "entry_bar": utc("09:54")}]}
+        assert start2["re_fed_from"] == "2026-07-15" and start2["today"] == str(later.date())
+        kinds = collections.Counter(x["kind"] for x in recs)
+        assert kinds["exit"] == 1 and kinds["benchmarks"] == 1 and kinds["signal"] == 1 and kinds["fill"] == 2
+        told = [t_ for k, t_ in sent if k == "trade"]
+        assert len(told) == 1 and "EXIT restart_replay (target)" in told[0] and "no chance to act" in told[0]
+        # the window a session is benchmarked on ends with that session, wherever the store ends
+        w = r2.stores["NQ"].session_window("2026-07-15")
+        assert len(w) <= RUN.SESSION_TAIL_ROWS and D.et_clock(w.index[-2:-1])[1][0] == np.datetime64("2026-07-15")
+        assert D.et_clock(w.index[-1:])[1][0] == np.datetime64("2026-07-16")  # one bar of the next: this one is over
+        assert JN.integrity(base)["ok"]
+    finally:
+        r2.stop()
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_restart_refuses_when_the_store_lacks_the_open_trades_session_and_names_it():
+    later = DAY + pd.Timedelta(days=30)
+    restart = at("11:00:05", later)
+
+    def holed(df):                                                            # the PC was off: 10:06 on the day .. D+29 18:00 missing
+        resume = pd.Timestamp(f"{(later - pd.Timedelta(days=1)).date()} 18:00", tz=ET).tz_convert("UTC").tz_localize(None)
+        return pd.concat([df.loc[:utc("10:05")], df.loc[resume:pd.Timestamp(restart - 120, unit="s")]])
+    base, df, r2, sent, error = _crash_then(holed, restart, accept_holes=True)
+    try:
+        assert error and "2026-07-15" in error and "15:55" in error and "--backfill NQ=" in error
+        assert "NQ-2026-07-15" in error and "--accept-short-session 2026-07-15" in error
+        recs = JN.read_journal(base)
+        ref = [x for x in recs if x["kind"] == "run" and x["what"] == "refused"]
+        assert len(ref) == 1 and ref[0]["session"] == "2026-07-15" and ref[0]["store_last_of_session"] == utc("10:05")
+        assert not [x for x in recs if x["kind"] == "exit"]                   # nothing was closed on half a session
+        pushed = [t for k, t in sent if k == "status" and "REFUSED" in t]
+        assert len(pushed) == 1 and "2026-07-15" in pushed[0] and "backfill" in pushed[0]   # the refusal reaches the phone
+        assert not NO_RESULT.search(pushed[0])
+    finally:
+        r2.stop(journal_it=False)
+    try:
+        # backfilled: the same start goes through, and the trade is closed from the stored bars
+        clock3, sent3 = Clock(restart + 60), []
+        r3 = RUN.Runner(base, MemFeed({"NQ": df}, clock3), instruments=("NQ",), clock=clock3, sleep=clock3.sleep,
+                        allow_cold=True, inbound=None, background=False, log=lambda line: None, accept_holes=True,
+                        stores={"NQ": RUN.BarStore(None, frame=df.loc[:pd.Timestamp(restart - 120, unit="s")])},
+                        notify=lambda b, kind, text, fields=None: sent3.append((kind, text)) or {})
+        r3.start_live()
+        r3.cycle_live()
+        r3.stop()
+        t = JN.rebuild(JN.read_journal(base))["trades"][0]
+        assert t["exit_reason"] == "restart_replay" and t["exit"]["replayed_reason"] == "target" and t["complete"]
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+    # a session a PERSON says closed early: the trade ends at that session's last close, and the record says so
+    base, df, r2, sent, error = _crash_then(holed, restart, accept_holes=True, accept_short_sessions=("2026-07-15",))
+    try:
+        assert error is None
+        recs = JN.read_journal(base)
+        t = JN.rebuild(recs)["trades"][0]
+        assert t["exit_reason"] == "restart_replay" and t["exit"]["replayed_reason"] == "session_end"
+        assert t["exit"]["exit_bar"] == utc("10:05") and t["complete"]
+        assert [x for x in recs if x["kind"] == "run" and x["what"] == "start"][1]["accept_short_sessions"] == ["2026-07-15"]
+    finally:
+        r2.stop()
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_restart_refuses_when_the_open_trades_session_has_a_hole_inside_it_even_if_it_ends_at_1555():
+    """`session_complete` reads the LAST stamp of the session. A backfill from a chart export that starts mid-session
+    leaves a store that 'holds 15:55' and lacks the minutes in which the target was hit: the trade was closed `flat`
+    at 15:55, silently, where the full bars close it at the 10:30 target. Every trading minute from the entry minute
+    to 15:55 must be held, and --accept-short-session does not unlock a hole."""
+    later = DAY + pd.Timedelta(days=30)
+    restart = at("11:00:05", later)
+
+    def holed(df):                                                            # 10:06 .. 11:59 of the fill day missing
+        return pd.concat([df.loc[:utc("10:05")], df.loc[utc("12:00"):pd.Timestamp(restart - 120, unit="s")]])
+    for kw in ({}, {"accept_holes": True}, {"accept_short_sessions": ("2026-07-15",)}):
+        base, df, r2, sent, error = _crash_then(holed, restart, **kw)
+        try:
+            assert error and "2026-07-15" in error and "NQ-2026-07-15" in error and "--backfill NQ=" in error, error
+            assert "114 trading minute(s)" in error and utc("10:05") in error and utc("12:00") in error
+            recs = JN.read_journal(base)
+            ref = [x for x in recs if x["kind"] == "run" and x["what"] == "refused"]
+            assert len(ref) == 1 and ref[0]["session"] == "2026-07-15" and ref[0]["entry_bar"] == utc("09:54")
+            assert ref[0]["missing"] == [{"after": utc("10:05"), "before": utc("12:00"), "trading_minutes": 114}]
+            assert not [x for x in recs if x["kind"] == "exit"]               # nothing was closed across the hole
+            pushed = [t for k, t in sent if k == "status" and "REFUSED" in t]
+            assert len(pushed) == 1 and "2026-07-15" in pushed[0] and not NO_RESULT.search(pushed[0])
+        finally:
+            r2.stop(journal_it=False)
+            shutil.rmtree(base, ignore_errors=True)
+    # ONE missing minute is enough (the 10:30 target minute itself), and a store that starts after the entry minute
+    one = lambda df: df.loc[:pd.Timestamp(restart - 120, unit="s")].drop(pd.Timestamp(utc("10:30")))
+    base, df, r2, sent, error = _crash_then(one, restart)
+    try:
+        assert error and "1 trading minute(s)" in error and utc("10:29") in error and utc("10:31") in error
+        assert not [x for x in JN.read_journal(base) if x["kind"] == "exit"]
+    finally:
+        r2.stop(journal_it=False)
+        shutil.rmtree(base, ignore_errors=True)
+    st = RUN.BarStore(None, frame=df.loc[utc("10:00"):utc("16:30")])
+    g = st.session_gaps("2026-07-15", utc("09:54"))
+    assert len(g) == 1 and g[0]["after"] is None and g[0]["before"] == utc("10:00") and g[0]["trading_minutes"] == 6
+    full = RUN.BarStore(None, frame=df.loc[:utc("16:30")])
+    assert full.session_gaps("2026-07-15", utc("09:54")) == [] and full.session_gaps("2026-07-15") == []
+    # minutes missing AFTER 15:55 do not matter: the trade is flat by then
+    late = RUN.BarStore(None, frame=df.loc[:utc("16:30")].drop(pd.Timestamp(utc("16:10"))))
+    assert late.session_gaps("2026-07-15", utc("09:54")) == []
+
+
+def test_liveness_alive_at_0925_terminal_line_at_1010_failing_again_each_trading_day_and_a_refusal_is_pushed():
+    """A dead runner looks like a day without a setup. With an injected clock: (a) ALIVE once per trading day at the
+    first poll at or after 09:25 ET; (b) at 10:10 one line per instrument that did not fill, with its terminal event;
+    (c) a FAILING state again once per trading day while it lasts; (d) a refusal after startup is pushed. All
+    `status`, none with an R or a P&L."""
+    assert "status" in A.PUSH_KINDS
+    base = tempfile.mkdtemp(prefix="tjrh_alive_")
+    try:
+        df = build_day()                                                      # an inert day: nothing sweeps
+        clock, sent = Clock(at("09:20:05")), []
+        r, feed = _live(base, MemFeed, clock, df, "09:18", sent)
+        r.start_live()
+        while clock() < at("10:20"):
+            r.cycle_live()
+            clock.sleep(30)
+        r.stop()
+        assert [k for k, _ in sent] == ["status", "status"], sent
+        alive, term = sent[0][1], sent[1][1]
+        assert "ALIVE 2026-07-15 09:25 ET" in alive and "OBSERVE" in alive and "filled 0 of 100" in alive
+        assert "NQ: store to 13:24Z, 0 trading min behind, warm NO" in alive and "no open problem" in alive
+        assert "2026-07-15 10:10 ET — no fill: NQ: no_sweep (window_closed)" in term
+        assert not NO_RESULT.search(alive + term)
+        live = [x for x in JN.read_journal(base) if x["kind"] == "run" and x["what"] == "liveness"]
+        assert [(x["part"], x["day"]) for x in live] == [("alive", "2026-07-15"), ("terminal", "2026-07-15")]
+        assert live[0]["mode"] == "observe" and live[0]["filled"] == 0 and live[0]["instruments"]["NQ"]["warm"] is False
+        assert live[1]["lines"] == ["NQ: no_sweep (window_closed)"] and live[0]["ts_ms"] == int(at("09:25:05") * 1000)
+        # a restart the same day says neither again: once per trading day, read back from the journal
+        clock2, sent2 = Clock(at("10:30:05")), []
+        r2, _ = _live(base, MemFeed, clock2, df, "10:20", sent2)
+        r2.start_live()
+        r2.cycle_live()
+        r2.stop()
+        assert sent2 == []
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+    # the hand-built long day, armed: the instrument FILLS, so 10:10 has no line for it; an expiry is named with its why
+    base = tempfile.mkdtemp(prefix="tjrh_alive_")
+    try:
+        r, sent, errors = _mem_run(base, until="10:20")
+        status = [t for k, t in sent if k == "status"]
+        assert not errors and len(status) == 1 and "ALIVE" in status[0] and "mode ARMED" in status[0]
+        term = [x for x in JN.read_journal(base) if x["kind"] == "run" and x.get("part") == "terminal"]
+        assert len(term) == 1 and term[0]["lines"] == []
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+    base = tempfile.mkdtemp(prefix="tjrh_alive_")
+    try:
+        day = {k: v for k, v in FULL_LONG.items() if k not in ("09:52", "09:53", "09:54")}     # a signal, never touched
+        r, sent, errors = _mem_run(base, until="10:20", df=build_day(day, fill_runs={("09:41", "10:15"): HIGH}))
+        status = [t for k, t in sent if k == "status"]
+        assert not errors and len(status) == 2 and "no fill: NQ: expired (no_touch; window_closed)" in status[1], status
+        assert not NO_RESULT.search(" ".join(status))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+    # (c) a failure that lasts: pushed when it starts, then ONCE per trading day — not on the weekend, not per poll
+    base = tempfile.mkdtemp(prefix="tjrh_alive_")
+    try:
+        df = build_day(extra_days=6)
+        clock, sent = Clock(at("09:30:05")), []
+        feed = MemFeed({"NQ": df}, clock)
+        r = RUN.Runner(base, feed, instruments=("NQ",), clock=clock, sleep=clock.sleep, allow_cold=True, inbound=None,
+                       background=False, log=lambda line: None, accept_holes=True,
+                       stores={"NQ": RUN.BarStore(None, frame=df.loc[:utc("09:28")])},
+                       notify=lambda b, kind, text, fields=None: sent.append((kind, text, clock())) or {})
+        r.start_live()
+        r.cycle_live()
+        feed.fail = RUN.FeedError("tv ui eval: no answer within 15 s", "timeout")
+        end = at("10:00", DAY + pd.Timedelta(days=5))                        # Wednesday 09:30 .. Monday 10:00
+        while clock() < end:
+            r.cycle_live()
+            clock.sleep(600)
+        r.stop()
+        first = [(k, t) for k, t, _ in sent if "FAILING since" in t and "STILL" not in t]
+        again = [(k, t, ts) for k, t, ts in sent if "STILL FAILING" in t]
+        assert len(first) == 1 and first[0][0] == "status"
+        when = [pd.Timestamp(ts, unit="s", tz="UTC").tz_convert(ET) for _, _, ts in again]
+        assert [w.day_name() for w in when] == ["Thursday", "Friday", "Monday"], when
+        assert all(w.hour * 60 + w.minute >= 9 * 60 + 25 and w.hour < 10 for w in when)
+        assert all(k == "status" and "no bar is being read" in t for k, t, _ in again)
+        alive = [t for k, t, _ in sent if "tjr_human ALIVE" in t]
+        assert len(alive) == 4 and all("OPEN PROBLEMS: feed" in t for t in alive[1:]) and "no open problem" in alive[0]
+        assert [t for k, t, _ in sent if "no fill: NQ: no levels today" in t]  # a failing feed is not a quiet day
+        assert all(k == "status" for k, _, _ in sent) and not NO_RESULT.search(" ".join(t for _, t, _ in sent))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+    # (d) a refusal raised after startup reaches the phone before the process ends — `_refuse`'s own, and any other
+    for how in ("replay_mode", "foreign"):
+        base = tempfile.mkdtemp(prefix="tjrh_alive_")
+        try:
+            clock, sent = Clock(at("09:30:05")), []
+            r, feed = _live(base, MemFeed, clock, build_day(), "09:28", sent)
+            if how == "replay_mode":
+                feed.fail = RUN.FeedError("the chart is in REPLAY mode", "replay")
+            else:
+                r.cycle_live = lambda: (_ for _ in ()).throw(RUN.Refused("the store changed under the run"))
+            try:
+                r.run_live(max_cycles=3)
+            except RUN.Refused as exc:
+                said = str(exc)
+            else:
+                raise AssertionError("not refused")
+            told = [t for k, t in sent if k == "status" and "REFUSED" in t]
+            assert len(told) == 1 and said[:40] in told[0] and "STOPPING" in told[0], (how, sent)
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+
+
+def _heikin_ashi(frame: pd.DataFrame) -> pd.DataFrame:
+    ha = frame.copy()
+    ha["close"] = (frame["open"] + frame["high"] + frame["low"] + frame["close"]) / 4.0
+    o = [float(frame["open"].iloc[0])]
+    for k in range(1, len(frame)):
+        o.append((o[-1] + float(ha["close"].iloc[k - 1])) / 2.0)
+    ha["open"] = o
+    ha["high"] = np.maximum(frame["high"], np.maximum(ha["open"], ha["close"]))
+    ha["low"] = np.minimum(frame["low"], np.minimum(ha["open"], ha["close"]))
+    return ha
+
+
+def _renko(frame: pd.DataFrame, brick: float = 5.0, shared_stamps: bool = False) -> list:
+    """Bricks of a fixed size on the tick grid, stamped with the minute they completed in: irregular, and (as
+    TradingView does when several complete in one minute) optionally sharing a stamp."""
+    rows, base = [], float(frame["close"].iloc[0])
+    for ts, c in zip(frame.index, frame["close"]):
+        while abs(float(c) - base) >= brick:
+            step = brick if c > base else -brick
+            o, cl = base, base + step
+            t = int(ts.value // 10**9)
+            if rows and t <= rows[-1][0] and not shared_stamps:
+                break
+            rows.append([t, o, max(o, cl), min(o, cl), cl, 1.0])
+            base = cl
+    return rows
+
+
+def test_chart_style_heikin_ashi_renko_are_never_merged_into_the_store():
+    """Symbol and resolution were checked, the chart STYLE was not. Every fetched batch is held to the tick grid, to
+    whole-minute stamps 60 s apart and to high >= max(open, close), low <= min(open, close) BEFORE it is merged; the
+    style the page reports is required to be Candles or Bars. A failing batch is journaled, pushed, retried."""
+    frames = warm_frames()
+    n = len(frames["NQ"])
+    nq, es = PANES[0]["symbol"], PANES[1]["symbol"]
+    good = _rows(frames["NQ"].iloc[n - 110:n - 29])
+    RUN.check_batch(good, 0.25)                                               # plain 1-minute OHLC passes ...
+    RUN.check_batch(_rows(market("NQ").iloc[-400:]), 0.25)                    # ... and so do 400 stored market bars
+    RUN.check_batch(_rows(market("ES").iloc[:1500]), 0.25)                    # (a weekend and the daily halt inside)
+    one_gap = [r for k, r in enumerate(good) if k != 40]                      # a minute in which nothing traded is allowed
+    RUN.check_batch(one_gap, 0.25)
+    inverted = [list(r) for r in good]
+    inverted[10][2] = min(inverted[10][1], inverted[10][4]) - 0.25            # a high under its own open / close
+    late = [list(r) for r in good]
+    late[5][0] += 7                                                           # a stamp that is not a whole minute
+    bricks = _renko(frames["NQ"].iloc[n - 600:n - 29])                        # bricks that happen to come one a minute
+    regular = [[good[0][0] + 60 * k, *row[1:]] for k, row in enumerate(bricks[:60])]
+    for rows, word in ((_rows(_heikin_ashi(frames["NQ"].iloc[n - 110:n - 29])), "HEIKIN ASHI"),
+                       (_renko(frames["NQ"].iloc[n - 600:n - 29]), "60 s apart"),
+                       (_renko(frames["NQ"].iloc[n - 600:n - 29], shared_stamps=True, brick=1.0), "repeat"),
+                       (regular, "has a wick"), (inverted, "high under"), (late, "whole minutes"),
+                       ([[1, 2], [3]], "not rows")):
+        try:
+            RUN.check_batch(rows, 0.25, "NQ")
+        except RUN.FeedError as exc:
+            assert exc.kind == "bars" and word in str(exc) and "nothing was merged" in str(exc) or word == "not rows", exc
+        else:
+            raise AssertionError(word)
+    assert len(_renko(frames["NQ"].iloc[n - 600:n - 29])) >= 30
+    for value, ok in ((0, True), (1, True), (None, True), (8, False), (4, False), (7, False), (2, False), (9, False)):
+        try:
+            RUN.check_chart_type(value, "NQ")
+        except RUN.FeedError as exc:
+            assert not ok and exc.kind == "bars" and "Candles" in str(exc)
+        else:
+            assert ok, value
+    try:
+        RUN.check_chart_type(8, "NQ")
+    except RUN.FeedError as exc:
+        assert "HeikinAshi" in str(exc)
+
+    for method in ("eval", "focus"):
+        for style in ("heikin_ashi", "renko", "style_flag"):
+            ls = live_setup(frames, n - 40, method=method)
+            try:
+                serve_upto(ls, frames, n - 30)
+                ls.runner.start_live()
+                ls.runner.cycle_live()
+                held = {i: ls.stores[i].frame.copy() for i in frames}
+                on_disk = open(ls.stores["NQ"].path, encoding="utf-8").read()
+                serve_upto(ls, frames, n - 27)                                 # three more minutes — but NQ's pane changed style
+                if style == "heikin_ashi":
+                    ls.tv.state["bars"][nq] = _rows(_heikin_ashi(frames["NQ"].iloc[n - 110:n - 26]))
+                elif style == "renko":
+                    ls.tv.state["bars"][nq] = _renko(frames["NQ"].iloc[n - 600:n - 26])
+                else:                                                          # true bars, but the page says Heikin Ashi
+                    ls.tv.state["panes"] = [{**PANES[0], "style": 8}, {**PANES[1], "style": 1}]
+                ls.tv.save()
+                for _ in range(2):
+                    ls.runner.cycle_live()
+                assert ls.stores["NQ"].frame.equals(held["NQ"]), (method, style)               # NEVER merged
+                assert open(ls.stores["NQ"].path, encoding="utf-8").read() == on_disk
+                assert len(ls.stores["ES"].frame) == len(held["ES"]) + 3                       # the other pane is fine
+                feeds = [x for x in JN.read_journal(ls.base) if x["kind"] == "feed"]
+                assert [(x["what"], x["scope"], x["error_kind"]) for x in feeds] == [("failure", "NQ", "bars")], feeds
+                assert "nothing was merged" in feeds[0]["error"]
+                told = [t for k, t, _ in ls.sent if k == "status" and "FAILING" in t]
+                assert len(told) == 1 and "NQ" in told[0], ls.sent                             # pushed, once, as status
+                assert ("HEIKIN ASHI" in told[0]) if style == "heikin_ashi" else True
+                assert ("HeikinAshi" in told[0]) if style == "style_flag" else True
+                assert ls.runner.facts["feed_failures"] == 2                                   # a feed failure: retried each poll
+                # the pane is set back to candles: the next poll merges the real bars, the gap included
+                ls.tv.state["panes"] = PANES
+                serve_upto(ls, frames, n - 26)
+                ls.runner.cycle_live()
+                assert ls.stores["NQ"].last == frames["NQ"].index[n - 27]
+                assert ls.stores["NQ"].frame.iloc[-4:].equals(frames["NQ"].iloc[n - 30:n - 26].astype(float))
+                feeds = [x["what"] for x in JN.read_journal(ls.base) if x["kind"] == "feed"]
+                assert feeds == ["failure", "recovered"]
+                assert [t for k, t, _ in ls.sent if k == "status" and "RECOVERED: NQ" in t]
+            finally:
+                live_close(ls)
+
+
+def test_detector_feed_is_atomic_per_row_when_a_step_raises_mid_chunk():
+    """`feed` extended its buffers with the whole chunk, then stepped: an exception partway left rows in the buffers
+    that were never stepped, and the next feed appended after them. Now a row that raises did not happen — the state
+    is what it was before it — the rows before it stay processed, and feeding the same rows again is the retry."""
+    df = build_day(FULL_LONG, fill_runs=HIGH_RUN, extra_days=1)
+    want = D.detect(df, "NQ")
+    clean = D.Detector("NQ")
+    clean.feed(df)
+    for stamp in (utc("09:29"), utc("09:40"), utc("09:53"), utc("09:54"), utc("18:00"), utc("09:44")):
+        k = df.index.get_loc(pd.Timestamp(stamp))
+        det = D.Detector("NQ")
+        a = det.feed(df.iloc[:k - 7])
+        real, state = det._step, {"armed": True}
+
+        def flaky(i, real=real, state=state, k=k):
+            real(i)                                                           # the row is fully stepped, and THEN it fails
+            if i == k and state["armed"]:
+                state["armed"] = False
+                raise OSError("the disk said no")
+        det._step = flaky
+        try:
+            det.feed(df.iloc[k - 7:k + 9])
+        except OSError as exc:
+            before = exc.events_before
+        else:
+            raise AssertionError("did not raise")
+        assert det._n == k and det.snapshot()["last_bar"] == df.index[k - 1].isoformat(), stamp
+        assert all(buf.n == k for buf in (det._t, det._o, det._h, det._l, det._c, det._v, det._m, det._day))
+        assert det.events == a + before and all(e["bar_time"] < df.index[k].isoformat() for e in det.events)
+        assert det.events == [e for e in want if e["bar_time"] < df.index[k].isoformat()], stamp
+        rest = det.feed(df.iloc[k - 3:])                                      # the retry, overlapping what is held
+        assert det.dropped == 3 and det.events == want and a + before + rest == want, stamp
+        assert det.snapshot() == {**clean.snapshot(), "dropped": 3}
+        assert det._bt.n == clean._bt.n and np.array_equal(det._bh.a[:det._bt.n], clean._bh.a[:clean._bt.n])
+        assert np.array_equal(det._bc.a[:det._bt.n], clean._bc.a[:clean._bt.n]) and det._last == clean._last
+        assert len(det._sw_hi) == len(clean._sw_hi) and len(det._sessions) == len(clean._sessions)
+
+
+def test_machinery_facts_say_their_basis_and_break_routed_sessions_down_by_branch_counts_only():
+    """The detector event counts are over ALL sessions, setups and trades over ROUTED (warm) ones: each line now says
+    which, and the routed sessions are broken down by branch. Counts of events only — on market data."""
+    import tjr_human as CLI
+    out = RUN.replay({"NQ": CSV["NQ"]})
+    facts = out["facts"]
+    f = facts["instruments"]["NQ"]
+    assert out["synthetic"] is False and "outcomes" not in out
+    assert "ALL sessions" in f["detector_events_basis"] and "ROUTED" in f["routed_sessions"]["basis"]
+    assert "ROUTED" in facts["setups"]["basis"] and "ROUTED" in facts["trades"]["basis"]
+    evs = market_events("NQ")
+    warm_days = {e["day"] for e in evs if e["kind"] == "levels" and e["warm"]}
+    warm = [e for e in evs if e["day"] in warm_days]
+    count = lambda kind, key: dict(sorted(collections.Counter(key(e) for e in warm if e["kind"] == kind).items()))   # noqa: E731
+    routed = f["routed_sessions"]
+    assert routed["detector_events"] == dict(sorted(collections.Counter(e["kind"] for e in warm).items()))
+    assert routed["detector_events"] != f["detector_events"]                  # which is why the basis has to be said
+    want = {"sweeps_by_class_and_direction": count("sweep", lambda e: f"{e['level']['class']}/{e['direction']}"),
+            "confirmations_by_types": count("confirmation", lambda e: "+".join(e["types"])),
+            "signals_by_zone": count("signal", lambda e: e["zone"]["kind"]),
+            "entry_triggers_by_zone": count("entry_trigger", lambda e: e["zone"]["kind"]),
+            "invalidations_by_why_and_stage": count("invalidated", lambda e: f"{e['reason']}@{e['stage']}"),
+            "expiries_by_why": count("expired", lambda e: e["reason"])}
+    for key, val in want.items():
+        assert routed.get(key, {}) == val, key
+    assert sum(routed["signals_by_zone"].values()) == facts["setups"]["signals"]
+    assert not (OUTCOME_KEYS & set(_keys(facts))) and not _floats(facts)
+    text = io.StringIO()
+    with contextlib.redirect_stdout(text):
+        CLI._print_facts(facts)
+    printed = text.getvalue()
+    head, body = printed.split("\n", 1)
+    assert body.count("[basis: ") >= 10 and "sweeps by level class / direction [basis: ROUTED" in body
+    assert "detector events [basis: ALL sessions" in body and "setups [basis: ROUTED" in body
+    for banned in ("win rate", "p&l", "pnl", "sharpe", "expectancy"):
+        assert banned not in printed.lower(), banned
+    assert not re.search(r"[+-]\s?\d+(?:\.\d+)?\s?R\b", printed) and not NO_RESULT.search(body)
+    assert not OUTCOME_TEXT.search(body) and not re.search(r"\d\.\d", body)
+
+
+def test_a_startup_backlog_of_old_messages_gets_one_reply_and_every_message_is_journaled():
+    base = tempfile.mkdtemp(prefix="tjrh_backlog_")
+    try:
+        clock, sent, inbound = Clock(at("12:00:05")), [], ScriptedInbound()
+        r, feed = _live(base, MemFeed, clock, build_day(), "11:58", sent)
+        r.inbound = inbound
+        r.start_live()
+        old = ["skip", "exit now", "stop wick", "move stop 99", "hello there", "skip gut", "exit now news"]
+        inbound.box += [_dated(text, at("08:00:00") + 60 * k) for k, text in enumerate(old)]
+        r.cycle_live()
+        replies = [t for k, t in sent if k == "reply"]
+        assert len(replies) == 1, replies                                     # not seven, queued ahead of a real alert
+        assert "7 old message(s) IGNORED" in replies[0] and "120 s" in replies[0] and "journaled" in replies[0]
+        assert not [t for k, t in sent if "CLOCK" in t] and not r._failing     # a backlog is not evidence about the PC clock
+        recs = JN.read_journal(base)
+        assert len([x for x in recs if x["kind"] == "command" and x.get("stage") == "inbound"]) == 7
+        assert collections.Counter(x["why"] for x in recs if x["kind"] == "reject") == {"stale": 6, "unparsable": 1}
+        # a stale message sent AFTER the start is not a backlog: it keeps its own answer
+        clock.sleep(600)
+        inbound.box.append(_dated("skip", clock() - 300))
+        r.cycle_live()
+        replies = [t for k, t in sent if k == "reply"]
+        assert len(replies) == 2 and "REJECTED SKIP" in replies[1] and "too old" in replies[1]
+        r.stop()
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_bars_the_chart_revised_are_journaled_once_per_instrument_per_session_and_the_store_is_not_rewritten():
+    frames = warm_frames()
+    n = len(frames["NQ"])
+    ls = live_setup(frames, n - 40)
+    try:
+        serve_upto(ls, frames, n - 30)
+        ls.runner.start_live()
+        ls.runner.cycle_live()
+        held = ls.stores["NQ"].frame.copy()
+        changed = {i: f.copy() for i, f in frames.items()}
+        for k in (n - 38, n - 33):                                            # the chart now shows two stored NQ bars differently
+            changed["NQ"].iloc[k, changed["NQ"].columns.get_loc("high")] += 0.25
+        for upto in (n - 29, n - 28, n - 27):                                 # seen again at every poll: counted once
+            serve_upto(ls, changed, upto)
+            ls.runner.cycle_live()
+        rev = lambda: [x for x in JN.read_journal(ls.base) if x["kind"] == "feed" and x["what"] == "revised_upstream"]   # noqa: E731
+        assert rev() == []                                                    # the session is not over: nothing yet
+        assert ls.stores["NQ"].frame.loc[held.index].equals(held)             # the store is NOT rewritten
+        ls.runner.stop()
+        got = rev()
+        assert len(got) == 1 and got[0]["instrument"] == "NQ" and got[0]["count"] == 2 and got[0]["partial"] is True
+        assert got[0]["first"] == frames["NQ"].index[n - 38].isoformat() and got[0]["last"] == frames["NQ"].index[n - 33].isoformat()
+        assert got[0]["day"] == str(D.et_clock(frames["NQ"].index[n - 38:n - 37])[1][0])[:10] and got[0]["store_rewritten"] is False
+        assert len(RUN.BarStore(ls.stores["NQ"].path).frame.loc[held.index]) == len(held)
+        assert RUN.BarStore(ls.stores["NQ"].path).frame.loc[held.index].equals(held)
+    finally:
+        live_close(ls)
+    # when the session ends the record is whole (not partial), and it is one per session
+    base = tempfile.mkdtemp(prefix="tjrh_rev_")
+    try:
+        clock, sent = Clock(at("12:00:05")), []
+        r, feed = _live(base, MemFeed, clock, build_day(extra_days=1), "11:58", sent)
+        r.start_live()
+        r._note_revised("NQ", {"revised_stamps": [pd.Timestamp(utc("11:50")), pd.Timestamp(utc("11:40"))]})
+        r._note_revised("NQ", {"revised_stamps": [pd.Timestamp(utc("11:50"))]})
+        r.cycle_live()
+        assert not [x for x in JN.read_journal(base) if x.get("what") == "revised_upstream"]
+        clock.t = at("18:05:05")                                              # the next session has begun
+        r.cycle_live()
+        r.cycle_live()
+        got = [x for x in JN.read_journal(base) if x.get("what") == "revised_upstream"]
+        assert len(got) == 1 and (got[0]["day"], got[0]["count"], got[0]["partial"]) == ("2026-07-15", 2, False)
+        assert (got[0]["first"], got[0]["last"]) == (utc("11:40"), utc("11:50"))
+        r.stop()
+    finally:
         shutil.rmtree(base, ignore_errors=True)
 
 

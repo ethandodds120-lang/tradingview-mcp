@@ -69,7 +69,8 @@ def _reportable(records) -> None:
 def cmd_detect(a) -> int:
     try:
         runner = RUN.live_runner(a.dir, method=a.feed_method, draw=not a.no_draw, accept_holes=a.accept_holes,
-                                 backfill=_pairs(a.backfill, "--backfill"), keep_awake=not a.allow_sleep)
+                                 backfill=_pairs(a.backfill, "--backfill"), keep_awake=not a.allow_sleep,
+                                 accept_short_sessions=a.accept_short_session or ())
     except RUN.Refused as exc:
         print(f"REFUSED to start: {exc}", file=sys.stderr)
         return 2
@@ -105,12 +106,23 @@ def cmd_arm(a) -> int:
 
 
 def _print_facts(facts: dict) -> None:
-    print("MACHINERY FACTS (section 9.8: no R, no win rate, no per-exit totals)")
+    print("MACHINERY FACTS (section 9.8: counts of events only — no result of any kind; each line says its basis)")
     for inst, f in facts["instruments"].items():
         print(f"  {inst}: bars {f['bars']}, days routed {f['routed_days']}, cold days not routed "
-              f"{f['cold_days_not_routed']}, detector events {f['detector_events']}")
-    print(f"  setups: {facts['setups']}")
-    print(f"  trades: {facts['trades']}")
+              f"{f['cold_days_not_routed']}")
+        print(f"  {inst} detector events [basis: {f['detector_events_basis']}]: {f['detector_events']}")
+        routed = f["routed_sessions"]
+        for key, label in (("detector_events", "detector events"),
+                           ("sweeps_by_class_and_direction", "sweeps by level class / direction"),
+                           ("confirmations_by_types", "confirmations by type combination"),
+                           ("signals_by_zone", "signals by zone kind"),
+                           ("entry_triggers_by_zone", "entry triggers by zone kind"),
+                           ("invalidations_by_why_and_stage", "invalidations by reason @ stage"),
+                           ("expiries_by_why", "expiries by reason")):
+            print(f"  {inst} {label} [basis: {routed['basis']}]: {routed.get(key, {})}")
+    for name in ("setups", "trades"):
+        body = {k: v for k, v in facts[name].items() if k != "basis"}
+        print(f"  {name} [basis: {facts[name]['basis']}]: {body}")
     c = facts["commands"]
     print(f"  commands: scripted {c['scripted']}, received {c['received']}, accepted {c['accepted']}, "
           f"rejected {c['rejected']} {c['rejected_by_rule']}; price observations {c['price_observations']}")
@@ -201,6 +213,9 @@ def main(argv=None) -> int:
                    help="start although the two newest sessions of the store have a hole (journaled)")
     d.add_argument("--backfill", action="append", metavar="NQ=<csv>",
                    help="merge a 1-minute csv export into the store before starting (the store's own rows win)")
+    d.add_argument("--accept-short-session", action="append", metavar="YYYY-MM-DD",
+                   help="a trade a crash left open in this session ends at the session's last close: the session "
+                        "closed early (a holiday) and the store will never hold its 15:55 bar (journaled)")
     d.add_argument("--allow-sleep", action="store_true",
                    help="do not ask Windows to stay awake while the loop runs (a sleeping PC is a hole in the store)")
     d.add_argument("--cycles", type=int, default=None, help="stop after this many polls (default: run until Ctrl-C)")

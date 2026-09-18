@@ -34,7 +34,8 @@ import urllib.request
 from dataclasses import asdict, dataclass
 
 from ..alerts import CHAT_VAR, TOKEN_VAR, _flat
-from .journal import token_forms
+from ..alerts import _mask as _alerts_mask
+from ..alerts import credentials, token_problem
 
 REASONS = ("noise", "structure_changed", "news", "gut")
 UNSPECIFIED = "unspecified"
@@ -173,7 +174,6 @@ def parse(text: str) -> Command:
 
 # ────────────────────────────── the Telegram inbound transport ──────────────────────────────
 
-_TOKEN_SHAPE = re.compile(r"[0-9]+:[A-Za-z0-9_-]+")
 _CHAT_SHAPE = re.compile(r"-?[0-9]+|@[A-Za-z0-9_]+")
 
 
@@ -183,12 +183,12 @@ def telegram_problem() -> str | None:
     it (a trailing CR from a CRLF launcher is the usual one) is MALFORMED and
     Telegram is treated as not configured: urllib would refuse the URL with an
     error message that spells the token out."""
-    token, chat = os.environ.get(TOKEN_VAR), os.environ.get(CHAT_VAR)
-    if not token or not chat:
+    token, chat = os.environ.get(TOKEN_VAR), (os.environ.get(CHAT_VAR) or "").strip()
+    if not (token or "").strip() or not chat:
         return f"{TOKEN_VAR} / {CHAT_VAR} not set"
-    if not _TOKEN_SHAPE.fullmatch(token):
-        return (f"{TOKEN_VAR} is malformed (whitespace or a control character, e.g. a trailing CR from a CRLF "
-                "launcher, or not <digits>:<letters, digits, _ or ->): Telegram is OFF until the launcher is fixed")
+    problem = token_problem()                      # quantlab.alerts' validation: one rule for both directions
+    if problem is not None:
+        return problem + " — Telegram is OFF"
     if not _CHAT_SHAPE.fullmatch(chat):
         return (f"{CHAT_VAR} is malformed (whitespace or a control character, or not a number): "
                 "Telegram is OFF until the launcher is fixed")
@@ -197,7 +197,8 @@ def telegram_problem() -> str | None:
 
 def malformed() -> bool:
     """Both variables are set but one of them cannot be used (see `telegram_problem`)."""
-    return bool(os.environ.get(TOKEN_VAR)) and bool(os.environ.get(CHAT_VAR)) and telegram_problem() is not None
+    both = bool((os.environ.get(TOKEN_VAR) or "").strip()) and bool((os.environ.get(CHAT_VAR) or "").strip())
+    return both and telegram_problem() is not None
 
 
 def configured() -> bool:
@@ -207,10 +208,7 @@ def configured() -> bool:
 
 def _mask(text: str, token: str | None = None) -> str:
     """No error message leaves here carrying the token — raw, stripped or escaped."""
-    text = str(text)
-    for form in token_forms(token if token is not None else os.environ.get(TOKEN_VAR)):
-        text = text.replace(form, "<token>")
-    return text
+    return _alerts_mask(text, token)               # raw, stripped, percent-encoded, escaped — and the environment's always
 
 
 class _JournalFailed(RuntimeError):
@@ -290,11 +288,11 @@ class TelegramInbound:
         return out
 
     def _poll(self, timeout_s: float) -> list[Command]:
-        token, chat = os.environ.get(TOKEN_VAR), os.environ.get(CHAT_VAR)
         problem = telegram_problem()
         if problem is not None:                    # unset, or malformed: no request is ever built from it
             self.last_error = problem
             return []
+        token, chat = credentials()                # the chat id stripped, as quantlab.alerts sends to it
         url = f"https://api.telegram.org/bot{token}/getUpdates"
         body = {"timeout": int(max(0, timeout_s)), "allowed_updates": ["message"]}
         if self.offset is not None:

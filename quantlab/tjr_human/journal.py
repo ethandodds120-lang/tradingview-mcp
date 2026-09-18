@@ -66,11 +66,8 @@ def token_forms(token: str | None) -> list[str]:
     it is in the environment, stripped, and ESCAPED — a token with a trailing CR
     or LF (a CRLF launcher) appears in http.client's InvalidURL message as
     repr() text, which a plain replace of the raw value never matches."""
-    if not token:
-        return []
-    core = token.strip()
-    forms = {token, core, repr(token)[1:-1], json.dumps(token)[1:-1]}
-    return sorted((f for f in forms if len(f) >= 6), key=len, reverse=True)
+    from ..alerts import secret_forms               # one list for the log, the journal and the error texts:
+    return secret_forms(token)                      # raw, stripped, percent-encoded, repr- and JSON-escaped
 
 
 _NAME =re.compile(r"^([A-Z0-9]+)-(\d{4})-(\d{2})\.jsonl$")

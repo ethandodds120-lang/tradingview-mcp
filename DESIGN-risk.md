@@ -444,6 +444,16 @@ definition, and nothing is installed until the user has seen it.
   regardless of configuration (`book`, `recovered`).
 - The `fill` push is not unit-tested (it needs a routed fill); it goes
   through `notify`, which never raises and is bounded.
+- The token must look like a bot token exactly as it stands — digits, a
+  colon, then the secret; no space, no quote, no trailing CR from an editor
+  that saved CRLF. Anything else counts as not configured, with one
+  `alerts.log` line saying it is malformed and never the value, so a
+  malformed token can no longer reach a URL or an error text. `paper.py
+  alert --test` says `set but UNUSABLE - malformed` for it. Masking covers
+  the raw, stripped, percent-encoded and escaped forms.
+- The pushed set in code is wider than T-4's three since 2026-09-18:
+  `signal`, `trade`, `reply` and `status` belong to the `tjr_human` package
+  (`DESIGN-tjr-human.md` §9.3). Nothing in `paper.py` or `risk.py` uses them.
 
 **From the contract as first written**
 

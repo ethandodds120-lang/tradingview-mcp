@@ -440,12 +440,62 @@ class Detector:
         self._day.extend(day)
         self._out = []
         for i in range(self._n, self._n + len(t)):
-            self._n = i + 1                           # row i becomes visible; nothing after it is
-            self._advance_context(i)
-            self._step(i)
+            snap = self._snapshot(i)
+            try:
+                self._n = i + 1                       # row i becomes visible; nothing after it is
+                self._advance_context(i)
+                self._step(i)
+            except BaseException as exc:
+                # EACH ROW IS ATOMIC. Row i did not happen: the state is what it was before it, row i
+                # and the rest of the chunk leave the buffers (they were never visible), and the rows
+                # before it stay processed — their events are in `events` and ride on the exception
+                # (`events_before`), since this call cannot return them. Feeding the same rows again
+                # is the retry.
+                self._restore(snap)
+                out, self._out = self._out, []
+                self.events.extend(out)
+                try:
+                    exc.events_before = out
+                except Exception:
+                    pass
+                raise
         out, self._out = self._out, []
         self.events.extend(out)
         return out
+
+    _DAY_CONTAINERS = (list, dict, set)
+
+    def _snapshot(self, i: int) -> tuple:
+        """What one row can change, cheaply: counters, the forming context bin, the lengths of the
+        append-only lists, and the day's state one level deep (zones and gaps are never mutated in
+        place). The ATR and profile caches are pure functions of completed bins / sessions, so an
+        entry a failed row left behind is still right."""
+        nb = self._bt.n
+        last_bin = (float(self._bh.a[nb - 1]), float(self._bl.a[nb - 1]), float(self._bc.a[nb - 1]),
+                    int(self._bend.a[nb - 1])) if nb else None
+        ds = self._ds
+        day = None if ds is None else {k: (v.copy() if isinstance(v, self._DAY_CONTAINERS) else v)
+                                       for k, v in ds.__dict__.items()}
+        return (i, nb, last_bin, self._last, self._last_prev, self._done_now, len(self._sw_hi), len(self._sw_lo),
+                len(self._sessions), self._sessions[-1][2] if self._sessions else None, ds, day, len(self._out))
+
+    def _restore(self, snap: tuple) -> None:
+        i, nb, last_bin, last, last_prev, done_now, n_hi, n_lo, n_sess, sess_end, ds, day, n_out = snap
+        for buf in (self._t, self._o, self._h, self._l, self._c, self._v, self._m, self._day):
+            buf.n = i
+        self._n = i
+        for buf in (self._bt, self._bo, self._bh, self._bl, self._bc, self._bfirst, self._bend):
+            buf.n = nb
+        if last_bin is not None:
+            self._bh.a[nb - 1], self._bl.a[nb - 1], self._bc.a[nb - 1], self._bend.a[nb - 1] = last_bin
+        self._last, self._last_prev, self._done_now = last, last_prev, done_now
+        del self._sw_hi[n_hi:], self._sw_lo[n_lo:], self._sessions[n_sess:], self._out[n_out:]
+        if self._sessions:
+            self._sessions[-1][2] = sess_end
+        self._ds = ds
+        if ds is not None:
+            ds.__dict__.clear()
+            ds.__dict__.update(day)
 
     # ---- views, all cut at the visible row count ------------------------------------
 

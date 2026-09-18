@@ -697,6 +697,24 @@ above.**
   the same ten benchmarks, journaled; they decide nothing and change
   nothing here.
 
+**Third amendment, 2026-09-18, before trade one — two definitions the test
+needs and this section did not give.** Found by review of the build: the
+pass bar depended on a choice that was not written here, and this section is
+hashed into `ARMED`.
+
+- **The 100** are the first 100 filled trades in fill order: taken while
+  armed, confirmed by the closed entry bar, not skipped, not voided.
+- **The call.** `validate.deflated_sharpe(returns, ppy, trial_sharpes,
+  n_trials)` with `returns` = the 100 paired differences `d_i` against the
+  best of ten — the exit with the highest mean net R on those 100 entries,
+  ties to the first in §5's order; `ppy = 1` (one period is one trade;
+  nothing is annualised and it cancels); **`trial_sharpes` = the ten
+  per-trade Sharpe ratios, mean over standard deviation, of `R_human −
+  R_exit_k`**, one for each mechanical exit, so the expected maximum is set by
+  how much the human's edge varies across the comparators; `n_trials = 14`.
+  Considered and not taken: the eleven raw R-series Sharpes; a theoretical
+  `1/√(n−1)`.
+
 ## 6. What "beating the rule" would and would not show
 
 A pass says one person, on 100 trades, over the weeks it takes to collect
@@ -797,9 +815,11 @@ charged on every simulated fill, the benchmarks' included.
 indicative stop prices) → `armed_entry` is not an event, the bot simply waits →
 `fill` (exact candidate stops) → stop moves, `exit`. The signal is pushed
 through `quantlab.alerts.notify` (T-4's transport and its 20 s bound) and the
-chart is drawn; neither can delay or stop the detector. Three kinds are added
-to the pushed set for this package — `signal`, `trade` (fill, stop set, exit)
-and `reply` (the bot's answer to a command) — and T-4's three are untouched.
+chart is drawn; neither can delay or stop the detector. Four kinds are added
+to the pushed set for this package — `signal`, `trade` (fill, stop set, exit),
+`reply` (the bot's answer to a command) and, added by review, `status` (the
+daily liveness lines and every failure, recovery, hole and clock notice) —
+and T-4's three are untouched.
 
 | control | accepted | rule |
 |---|---|---|
@@ -915,3 +935,197 @@ data and refuses market data files.
    that price has not traded at since the 09:30 open — and the constant
    chooses which one the bot exits at. It is recorded in `ARMED` with the
    hashes and cannot change after trade one. `"untaken"` is recommended.
+
+### 9.11 As built (2026-09-18)
+
+Three build stages, then review by three lenses — causality of the detector,
+conformity to this pre-registration, operations and secrets — through five
+rounds with a fix after each of the first four; the last round found no
+defect. About 11,000 lines with their tests; `tests/test_tjr_human.py` (104
+tests) and the three older test files pass;
+`run.py --strategy tjr --synthetic --quick` unchanged. **The live feed has
+never run against a real TradingView session** — it is tested against a fake
+`tv` CLI only, and TradingView was not running when that was checked on
+2026-09-18 — and nothing is armed, scheduled or installed. **The first
+observe session is where the pane read and the chart-style read get checked
+against the real app.**
+
+What the reviews established: fed in one call or minute by minute over 41,160
+NQ and 41,154 ES bars the detector emits byte-identical events; 95 genuine
+truncations reproduce every earlier event and the cut day as of the cut; a
+fill does not move when its minute's high, low and close are replaced and
+only the open kept; no forming 5-minute, 1-hour or 4-hour bin is read and no
+swing is admitted by index. Every control's rule and refusal reproduces on
+hand-built days, the 60 s grace included; the ten exits and the random stop
+match hand arithmetic and `tjr_trailing_benchmark.replay` on 180 synthetic
+replays; reviews are written once at 25 and once at 50 and compute no
+deflated statistic; `final` refuses at 99 and runs at 100 with `n_trials =
+14`; observe mode takes no entry; `arm` cannot be undone once an entry has
+been taken, the entry minute of trade one included. No broker and no order
+anywhere in the package; the only network user is Telegram; with the two
+variables unset nothing tries the network; six kills mid-write left a clean
+journal.
+
+**Definitions made concrete where §9.2–§9.8 were silent.**
+
+- *Freeze and windows.* Levels freeze on the minute stamped 09:29 (it
+  completes the 09:25 bar). Sweep bins 09:30–09:45; closing-out minutes
+  09:49–10:08, so entries are stamped 09:50–10:09.
+- *Warm history* = 20 completed sessions **and** 100 completed 4-hour bins. A
+  cold day is never routed. The 30-session seed files therefore give 10
+  tradable sessions.
+- *Dead setup* runs from the sweep's completing minute, not from the signal;
+  "trades beyond" is low ≤ stop (long). An entry open at or beyond the wick
+  stop is no trade.
+- *Touch and close-out* are one pattern, consumed by its close-out: one closed
+  out before 09:49 is spent and a new touch is required. The same minute may
+  touch and close out.
+- *ATR and session extreme at the fill* are read as of the minute before the
+  entry minute, because the entry is that minute's open.
+- *1-minute zones.* Leg gaps from the sweep-extreme minute + 2 through the
+  confirmation minute, later gaps only when completed inside the entry
+  window. `ob` and breaker stamps are the last minute of their 5-minute bin.
+  The zone in play on a minute is the freshest known before it (§9.10 item 6).
+- *Untaken* = the session's extreme over completed minutes from 09:30 has not
+  reached the level; trading exactly at it counts as taken.
+- *No target beyond the entry* → the trade still fills and ends by stop or
+  the 15:55 flat.
+- *Exits.* Names `wick_fixed`, `wick_be_1r`, `wick_atr1.0`, `wick_atr1.5`,
+  `wick_swing`, `wick_hybrid`, `fixed_atr1.0`, `fixed_atr1.5`, `fixed_atr2.0`,
+  `fixed_session`, `random_stop`. The target is not tested on the entry
+  minute; later minutes test stop, then target, then the flat; both in one
+  minute is the stop. Costs are charged once, on the entry notional. The
+  random stop is seeded from a hash of the setup id.
+- *The fill.* A closed-bars feed delivers the entry minute a minute late, so
+  the runner opens the trade provisionally at the forming bar's open and the
+  closed bar confirms it, re-bases it, or voids it. Only confirmed fills
+  count. Closed bars decide stops and targets, with the conventions of the
+  ten exits; the forming bar is used for the entry, for the price a `MOVE
+  STOP` is tested against, and to fill an `EXIT NOW`.
+- *Commands.* Telegram's own message date decides the `SKIP` boundary and,
+  when it is not later than receipt, the `STOP` window. **A `SKIP` that
+  Telegram dates before the fill voids the fill even when it arrives after
+  it** — on Telegram's date only, never on the PC clock, and never when the
+  message is dated before the signal existed; both clocks are journaled. A
+  voided fill counts nowhere: not toward the 100, the reviews or `final`, and
+  it returns the entry count to zero, so `arm` and `disarm` are possible
+  again. A `SKIP` that names no instrument is routed by the message time, not
+  by each setup's phase on arrival. A command older than 120 s on arrival is
+  stale and not executed; a backlog at startup gets one reply. An optional `NQ` / `ES` word addresses a command;
+  without it the one setup it can apply to is chosen, two is ambiguous. A
+  `STOP` rejected outright does not consume the one choice. A post-fill
+  `STOP` takes effect from the minute after the entry minute.
+- *Underwater exit* = an `EXIT NOW` at gross R < 0 whose minute is strictly
+  earlier than the earliest exit among the ten.
+- *Journal.* Extra kinds `event`, `armed`, `gap`, `final`, `run`, `feed`; the
+  sequence number is global; a record containing the token's value is
+  refused by the writer; a torn last line is skipped with a warning.
+- *Token.* It must look like a bot token exactly as it stands (digits, a
+  colon, the secret; no space, quote or trailing CR). Anything else turns
+  Telegram off for the process with one log line that never carries the
+  value; masking covers the raw, stripped, percent-encoded and escaped
+  forms. The same rule now guards T-4's path in `quantlab/alerts.py`.
+- *Restart.* State is rebuilt by re-feeding the store; a trade left open from
+  a past session is closed by replaying its stop, target and flat on the
+  stored bars, with exit reason `restart_replay`, and says the human had no
+  chance to act — such a trade still counts toward the 100 (§9.13 item 6). If
+  the store lacks that session, or has even one missing trading minute
+  between the entry and 15:55, the runner refuses to start, names the session
+  and the back-fill command, and pushes the refusal; no flag unlocks it.
+  Nothing is abandoned silently, at any age.
+- *Feed.* `tv ohlcv` reads only the active chart, so by default one `tv ui
+  eval` call reads both panes (`pane focus` then `ohlcv` is the fallback).
+  Every batch is checked before it is merged — quarter-tick grid, whole
+  minutes 60 s apart, high and low bracketing open and close, at least one
+  bar with a wick — and the chart type must be Bars or Candles where the app
+  exposes it, so Heikin Ashi, Renko or Line Break bars do not reach the
+  append-only store. Every sliding window of both real 1-minute files passes
+  (about 135,000 each, no refusal). Known limit: a Heikin Ashi series rounded
+  to the tick, or a small-brick Renko with wicks, can pass the batch checks,
+  and then only the chart-type read stands in the way. The store
+  is never rewritten; upstream revisions are journaled. Refusals to start: a
+  cold store, a hole of ten trading minutes in the two newest sessions
+  unless `--accept-holes`, a chart in replay mode, a PC clock more than 180 s
+  off the bars, a store whose first bar differs from the one `ARMED`
+  recorded. A day whose levels froze on an un-accepted hole is not routed.
+  The process asks Windows not to sleep; it cannot stop a closed lid.
+- *Liveness.* At the first poll after 09:25 ET the phone gets one line — mode,
+  filled n of 100, store freshness, warm or not — and after 10:10 one line per
+  instrument that did not fill, with why. No morning line means the runner
+  is down. A failing state is pushed again each trading day it lasts. None of
+  these carries R.
+- *`arm`* records the commit, the hash of §5, `TARGET_RULE`, `n_trials`, the
+  late-fill switch and each store's first bar, refuses uncommitted code
+  unless told otherwise, and refuses a directory a replay has written to.
+- *Replay.* A file is synthetic only if a sidecar names its hash and it is
+  not under `data/`. On market data the journal lives in a temporary
+  directory and is deleted; `--show-outcomes` and `--journal-dir` are
+  refused; the facts printed are counts, names and flags, not one float.
+
+### 9.12 Dry-run (2026-09-18) — the machine, not the strategy
+
+`tjr_human.py replay` over `data/{NQ,ES}_1min_tv.csv`, no human, 47 s, nothing
+left on disk, no R, win rate or total anywhere in its output (grepped).
+Thirty sessions seen per instrument; the first twenty are cold, **ten are
+routed** (2026-08-31 to 2026-09-11).
+
+| routed sessions, events | NQ | ES |
+|---|---|---|
+| no sweep | 2 | 3 |
+| sweeps | 8 | 7 |
+| confirmations = signals | 5 | 5 |
+| entry triggers = fills | 2 | 2 |
+| invalidated (wick stop traded first) | 4 | 3 |
+| expired (no touch, or no close-out) | 2 | 2 |
+
+Four fills in ten session-pairs: too few to say more than that it is in line
+with the funnel's 0.34 – 0.44 a session-pair, so **100 trades is about a
+year**. Every signal's zone was `eq`. 109 journal records, integrity ok; 24
+notices recorded and none sent; 247 shapes queued and none drawn. A second
+replay, on synthetic minutes with a scripted human, exercised every control
+and every refusal; `status` shows counts and no result; `final` refused at 5
+of 100.
+
+### 9.13 Before `arm` — the user's decisions, most consequential first
+
+1. **What "the H1 and H4 swing levels" means.** As specified they are the
+   nearest admissible swings over *all history held*, so the store's first
+   bar is part of the definition: review measured that a 30-session
+   1-minute store does not reproduce the 149-session funnel's levels (sweeps
+   differ on 4 of 10 warm NQ days) and that they converge only from about 90
+   sessions — and TradingView serves about 30 sessions of 1-minute history.
+   Either bound the lookback in the definition (recommended: H1 swings of the
+   last 5 completed sessions, H4 of the last 20, both inside the warm rule,
+   with the funnel re-cut once for the count), or keep all history and build
+   the 1-hour and 4-hour bins from the 149-session 5-minute file. As built
+   only guards exist: `ARMED` pins the store's first bar.
+2. **The `STOP` band.** "[wick, 2.0 ATR]" assumed the wick stop is the tight
+   one. With entries at the midpoint of a three-ATR range it is usually the
+   wide one: wider than 2.0 ATR on 10 of the 16 fills of the 30-session files.
+   As built the band is the two prices sorted, so on most fills the human can
+   only be *tighter* than the wick — the opposite of the amendment's purpose —
+   and the named widths 1.0 and 1.5 are rejected although they are benchmark
+   members. §5 is hashed, so the band is restated there before `arm`: as
+   built; or from 1.0 ATR out to the wick stop plus 1.0 ATR; or the tightest
+   to the widest of the five candidates.
+3. **`TARGET_RULE`**: `nearest` as written, or `untaken` (§2.6, recommended).
+4. **The `trial_sharpes` definition** now in §5's third amendment: confirm it
+   or replace it.
+5. **Touch and close-out**: a pattern closed out before 09:49 is spent (as
+   built), or the earlier touch stays armed. Changes the day's outcome on 2
+   of 23 NQ and 1 of 21 ES swept days.
+6. **A fill the human never had a chance to manage** (caught up from the
+   store after a restart): counts toward the 100 as built; a switch exists
+   to exclude fills delivered more than N seconds late.
+7. **Dead setup from the sweep** (as built) or only from the signal — about a
+   third of invalidations.
+
+Conventions a person could also overrule, recorded in §9.11: the exit order
+inside a minute; costs on the entry notional; tick-triggered stops filling
+at the stop price; the 120 s stale cut-off and the 10-minute reason window;
+whether review text is pushed; whether a changed §5 hash versus `ARMED`
+should refuse rather than warn; that with a slow PC clock `STOP`, `MOVE STOP`
+and `EXIT NOW` still read PC time when Telegram's date is later than receipt
+(the `STOP` window stretches by the skew, inside the 90 s the clock check
+allows); that a real exchange halt inside an abandoned trade's session would
+leave a hole no back-fill can close and no override exists for it.

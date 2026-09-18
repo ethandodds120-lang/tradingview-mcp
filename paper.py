@@ -370,8 +370,19 @@ def cmd_alert(args) -> int:
 
     if not args.test:
         raise SystemExit("alert: pass --test")
+    problem = alerts.token_problem()
+    token_typed = bool((os.environ.get(alerts.TOKEN_VAR) or "").strip())
     for var in (alerts.TOKEN_VAR, alerts.CHAT_VAR):
-        print(f"  {var:<20} {'set' if os.environ.get(var) else 'NOT set'}")
+        state = "set" if (os.environ.get(var) or "").strip() else "NOT set"
+        if var == alerts.TOKEN_VAR and token_typed and problem is not None:
+            # never the value: only that its shape is wrong (a stray space or quote,
+            # a CR from an editor that saved CRLF, or a truncated paste)
+            state = "set but UNUSABLE - malformed"
+        print(f"  {var:<20} {state}")
+    if token_typed and problem is not None:
+        print(f"\n  {problem}")
+        print("  Retype the token line by hand: digits, a colon, then the secret, with no")
+        print("  quotes, no spaces and nothing after it; save with Unix line endings.")
     if not alerts.configured():
         print("\n  Telegram is not configured — nothing was sent and no network was tried.")
         print("  deploy/README.md §9 says how to write /etc/quantlab/telegram.env by hand.\n")

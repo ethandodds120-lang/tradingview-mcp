@@ -66,6 +66,35 @@ What a bar produced is delivered to the trade manager at least once: an exceptio
 leaves it queued for the next cycle. A torn last row of a store csv is cut and
 journaled; a token with whitespace or a control character in it turns Telegram off.
 
+THE BARS ARE CHECKED BEFORE THEY ARE KEPT. The feed verifies symbol and resolution;
+the chart STYLE is a third thing: Heikin Ashi, Renko or Line Break bars under the
+right symbol at "1" would be merged into the append-only store as real prices. So
+every fetched batch passes `check_batch` before anything is merged: every OHLC
+value on the 0.25 tick grid (Heikin Ashi averages fall off it), every stamp a
+whole minute, stamps strictly increasing and 60 s apart apart from the known
+breaks (the daily halt, the weekend) and a small allowance for a minute in which
+nothing traded (Renko and Line Break bricks are nowhere near it), high >= max(open,
+close) and low <= min(open, close) — and not EVERY bar without a wick. Where the page says which style a pane shows,
+Candles or Bars is required too. A failing batch is never merged: it is a feed
+failure (kind "bars") — journaled, pushed, retried.
+
+ALIVE IS SAID, NOT ASSUMED. A dead runner and a day without a setup look the same
+from a phone, so the box says it is there: once per trading day at the first poll
+at or after 09:25 ET (mode, filled n of 100, per instrument how fresh the store is
+and whether it is warm), and at 10:10 ET one line per instrument that did not
+fill, with its terminal event. A FAILING state is pushed again once per trading
+day while it lasts, and a refusal raised after the start is pushed before the
+process ends. All of it is kind "status"; kind "trade" is the fill, the stop set
+and the exit, nothing else. None of it carries an R or a P&L.
+
+A TRADE IS NEVER ABANDONED. A filled trade without an exit from a PAST session (a
+crash, a PC switched off) is closed at the next start, however long ago it was:
+its session is re-fed from the store and the bars the process missed are tested
+against the stop in force, the target and the 15:55 flat (`restart_replay`: the
+human had no chance to act), then it is benchmarked on exactly that session's
+window of the store. If the store does not hold that session through 15:55 ET
+the start is refused, naming the session to backfill.
+
 Nothing here constructs a broker or sends an order. The only network is Telegram
 (`quantlab.alerts.notify` out, `commands.TelegramInbound` in), and with the two
 variables unset neither makes a request. Pushes and chart drawing run on their own
@@ -130,7 +159,15 @@ LOCK_FILE = "runner.lock"
 FUNNEL_SESSIONS = 149             # the depth of history section 2.6's fill count was measured with
 TAIL_BYTES = 1 << 16
 WRONG_SERIES_OVERLAP, WRONG_SERIES_JUMP = 0.005, 0.15
-SESSION_TAIL_ROWS = 20000         # what `close_session` is given: ~14 sessions, enough to warm the ATR
+SESSION_TAIL_ROWS = 20000         # the window `close_session` is given ENDS with the fill's session: ~14 sessions to warm the ATR
+TICK_SIZE = {"NQ": 0.25, "ES": 0.25}
+GRID_TOL = 1e-6                   # price units: how far from the tick grid a real price may sit (float noise)
+GAP_ALLOW_MIN, GAP_ALLOW_FRAC = 2, 0.05   # minutes in which nothing traded, per batch: the stored ES file has 6 in 41,000
+WICKLESS_MIN = 10                 # this many closed bars and not one wick among them: bricks / lines, not minutes
+CHART_TYPES = ("Bars", "Candles", "Line", "Area", "Renko", "Kagi", "PointAndFigure", "LineBreak", "HeikinAshi",
+               "HollowCandles")   # src/core/chart.js: what `tv state` reports as `chartType`
+CHART_TYPES_OK = (0, 1)           # Bars, Candles: true OHLC of the minute
+ALIVE_AT, TERMINAL_AT, TERMINAL_LATEST, DAY_END = 9 * 60 + 25, 10 * 60 + 10, 10 * 60 + 12, 17 * 60
 MARKER_SUFFIX = ".synthetic.json"
 PANES_MARK = "/*tjr_human:panes*/"
 
@@ -301,8 +338,9 @@ def write_synthetic_csv(path, frame: pd.DataFrame, generator: str, note: str = "
 
 
 def synthetic_walk(days: int = 25, seed: int = 1, start: str = "2026-01-05", price: float = 20000.0,
-                   sd: float = 4.0) -> pd.DataFrame:
-    """Seeded random-walk sessions on 1-minute bars, 18:00-16:59 ET, with volume. No market in it."""
+                   sd: float = 4.0, tick: float = 0.25) -> pd.DataFrame:
+    """Seeded random-walk sessions on 1-minute bars, 18:00-16:59 ET, with volume, on the
+    tick grid (rounding is monotonic: high >= open, close >= low survives it). No market in it."""
     rng = np.random.default_rng(int(seed))
     parts, last = [], float(price)
     for day in pd.bdate_range(start, periods=int(days)):
@@ -315,7 +353,8 @@ def synthetic_walk(days: int = 25, seed: int = 1, start: str = "2026-01-05", pri
                                    "close": c, "volume": rng.integers(50, 500, len(ix)).astype(float)},
                                   index=ix.tz_convert("UTC").tz_localize(None)))
         last = float(c[-1])
-    out = pd.concat(parts).round(2)
+    out = pd.concat(parts)
+    out[COLS[:4]] = (out[COLS[:4]] / tick).round() * tick
     out = out[~out.index.duplicated(keep="first")]
     out.index.name = "time"
     return out
@@ -449,13 +488,73 @@ class BarStore:
     def tail(self, rows: int = SESSION_TAIL_ROWS) -> pd.DataFrame:
         return self.frame.iloc[-int(rows):]
 
+    def session_rows(self, day) -> np.ndarray:
+        """Row numbers of the session dated `day` ('YYYY-MM-DD', the CME session date)."""
+        if not len(self.frame):
+            return np.array([], dtype=np.int64)
+        _, d = et_clock(self.frame.index)
+        return np.where(d == np.datetime64(pd.Timestamp(day).normalize(), "ns"))[0]
+
+    def session_window(self, day, rows: int = SESSION_TAIL_ROWS) -> pd.DataFrame | None:
+        """Exactly what benchmarking one session needs, however old it is: the bars of
+        that session, the `rows` before its end (the context ATR's warm-up) and the first
+        bar of the next session when there is one (it says this one is over). At the
+        15:55 close of the newest session this IS the old `tail()`; for a session a
+        month back it is the same window a tail would have been then."""
+        idx = self.session_rows(day)
+        if not len(idx):
+            return None
+        end = int(idx[-1]) + 1
+        if end < len(self.frame):
+            end += 1
+        return self.frame.iloc[max(0, end - int(rows)):end]
+
+    def session_complete(self, day) -> tuple[bool, str | None, bool]:
+        """(holds a minute stamped >= 15:55 ET of that session, its last stamp, a later session exists)."""
+        idx = self.session_rows(day)
+        if not len(idx):
+            return False, None, False
+        m, _ = et_clock(self.frame.index[idx[-1]:idx[-1] + 1])
+        return bool(int(m[0]) >= FLAT_MINUTES), self.frame.index[idx[-1]].isoformat(), bool(idx[-1] + 1 < len(self.frame))
+
+    def session_gaps(self, day, start=None) -> list[dict]:
+        """Trading minutes the store does NOT hold between `start` (a bar stamp of that session: the
+        entry minute of a trade; None = the session's first row held) and the minute stamped 15:55 ET
+        — or the session's last row when it holds no 15:55. `session_complete` reads the LAST stamp
+        only; a session can end at 15:55 and still lack the minutes in which a stop or a target was
+        hit. ANY missing trading minute counts: one is enough to hide the touch."""
+        idx = self.session_rows(day)
+        if not len(idx):
+            return []
+        stamps = self.frame.index[idx]
+        m, _ = et_clock(stamps)
+        first = stamps[0] if start is None else pd.Timestamp(start)
+        keep = np.asarray(stamps >= first)
+        flat = np.where(keep & (np.asarray(m) >= FLAT_MINUTES))[0]
+        if len(flat):
+            keep &= np.asarray(stamps <= stamps[flat[0]])
+        sel = stamps[keep]
+        out = []
+        if not len(sel):
+            return [{"after": None, "before": None, "from": first.isoformat(), "trading_minutes": None}]
+        if sel[0] > first:                              # the entry minute itself is not held
+            out.append({"after": None, "before": sel[0].isoformat(), "from": first.isoformat(),
+                        "trading_minutes": trading_minutes_between(first - pd.Timedelta(minutes=1), sel[0])})
+        gaps = np.diff(sel.values).astype("timedelta64[s]").astype(np.int64)
+        for k in np.where(gaps > 60)[0]:
+            missing = trading_minutes_between(sel[k], sel[k + 1])
+            if missing >= 1:
+                out.append({"after": sel[k].isoformat(), "before": sel[k + 1].isoformat(), "trading_minutes": missing})
+        return out
+
     def after(self, stamp) -> pd.DataFrame:
         return self.frame if stamp is None else self.frame.loc[self.frame.index > pd.Timestamp(stamp)]
 
-    def _check_series(self, bars: pd.DataFrame) -> int:
-        """Do these bars continue the series held? Returns the count of overlapping rows that differ."""
+    def _check_series(self, bars: pd.DataFrame) -> list:
+        """Do these bars continue the series held? Returns the stamps of overlapping rows that differ
+        (the chart revised a bar the store already holds; the store is never rewritten)."""
         if not len(self.frame) or not len(bars):
-            return 0
+            return []
         both = bars.index.intersection(self.frame.index)
         if len(both):
             old, new = self.frame.loc[both], bars.loc[both]
@@ -464,21 +563,23 @@ class BarStore:
             if rel > WRONG_SERIES_OVERLAP:
                 raise FeedError(f"the bars read do not match the store on {len(both)} shared minutes "
                                 f"(median close difference {rel:.1%}): another instrument's pane?", "series")
-            return int((np.abs(new[COLS[:4]].to_numpy() - old[COLS[:4]].to_numpy()) > 1e-9).any(axis=1).sum())
+            differ = (np.abs(new[COLS[:4]].to_numpy() - old[COLS[:4]].to_numpy()) > 1e-9).any(axis=1)
+            return list(both[differ])
         newer = bars.loc[bars.index > self.frame.index[-1]]
         if len(newer):
             a, b = float(self.frame["close"].iloc[-1]), float(newer["open"].iloc[0])
             if abs(b - a) / abs(a) > WRONG_SERIES_JUMP:
                 raise FeedError(f"the bars read start {abs(b - a) / abs(a):.0%} away from the store's last close: "
                                 "another instrument's pane?", "series")
-        return 0
+        return []
 
     def merge(self, bars: pd.DataFrame, normalised: bool = False) -> tuple[pd.DataFrame, dict]:
         bars = bars if normalised else _norm(bars)
         revised = self._check_series(bars)
         last = self.last
         new = bars if last is None else bars.loc[bars.index > last]
-        info = {"new": int(len(new)), "overlap": int(len(bars) - len(new)), "revised_upstream": revised, "hole": None}
+        info = {"new": int(len(new)), "overlap": int(len(bars) - len(new)), "revised_upstream": len(revised),
+                "revised_stamps": revised, "hole": None}
         if not len(new):
             return new, info
         if last is not None:
@@ -558,6 +659,78 @@ class TvCli:
         return payload
 
 
+def check_batch(rows, tick: float = 0.25, what: str = "") -> None:
+    """App-independent sanity of one fetched batch, BEFORE it is normalised or merged
+    (normalising would sort and de-duplicate what Renko gets wrong). `rows` is what
+    the chart returned: lists `[time, o, h, l, c, ...]` or dicts, oldest first, the
+    last one still forming. Raises FeedError(kind="bars"); returns None when it is
+    plain 1-minute OHLC. The forming bar is held to the stamp rules and its open to
+    the grid — its open is the entry `preview_fill` is given."""
+    if not rows:
+        return
+    who = f"{what}: " if what else ""
+    try:
+        if isinstance(rows[0], dict):
+            a = np.asarray([[r.get(k) for k in ("time", "open", "high", "low", "close")] for r in rows], dtype=float)
+        else:
+            a = np.asarray([list(r[:5]) for r in rows], dtype=float)
+    except (TypeError, ValueError):
+        raise FeedError(f"{who}the batch is not rows of time, open, high, low, close", "bars") from None
+    if a.ndim != 2 or a.shape[1] != 5 or not np.isfinite(a).all():
+        raise FeedError(f"{who}the batch has missing or non-finite values", "bars")
+    t, px = a[:, 0], a[:, 1:5]
+    closed = px[:-1]
+    n = len(closed)
+    off = np.abs(closed / tick - np.round(closed / tick)) * tick > GRID_TOL
+    o_form = px[-1, 0]
+    if off.any() or abs(o_form / tick - round(o_form / tick)) * tick > GRID_TOL:
+        raise FeedError(f"{who}{int(off.any(axis=1).sum())} of {n} closed bars have a price off the {tick} tick grid — "
+                        "averaged candles (HEIKIN ASHI?), not traded prices. Set the pane to plain Candles; "
+                        "nothing was merged", "bars")
+    o, h, l, c = closed[:, 0], closed[:, 1], closed[:, 2], closed[:, 3]          # noqa: E741
+    bad = (h < np.maximum(o, c) - GRID_TOL) | (l > np.minimum(o, c) + GRID_TOL)
+    if bad.any():
+        raise FeedError(f"{who}{int(bad.sum())} of {n} closed bars have a high under, or a low over, their own open "
+                        "or close: not OHLC bars; nothing was merged", "bars")
+    if (np.abs(t - np.round(t)) > 1e-6).any() or (np.round(t) % 60 != 0).any():
+        raise FeedError(f"{who}bar stamps that are not whole minutes: not a 1-minute time chart "
+                        "(Renko / Line Break / a seconds or tick chart?); nothing was merged", "bars")
+    d = np.diff(t)
+    if (d <= 0).any():
+        raise FeedError(f"{who}{int((d <= 0).sum())} bar stamps repeat or run backwards: not a 1-minute time chart "
+                        "(RENKO / LINE BREAK bricks share stamps); nothing was merged", "bars")
+    odd = 0
+    for k in np.where(d != 60)[0]:
+        if trading_minutes_between(_stamp(t[k]), _stamp(t[k + 1])) > 0:          # 0: the daily halt, the weekend
+            odd += 1
+    allowed = max(GAP_ALLOW_MIN, int(GAP_ALLOW_FRAC * len(d)))
+    if odd > allowed:
+        raise FeedError(f"{who}{odd} of {len(d)} consecutive bars are not 60 s apart inside a session (allowed "
+                        f"{allowed}: a minute without a trade, one hole): not a 1-minute time chart "
+                        "(RENKO / LINE BREAK?); nothing was merged", "bars")
+    if n >= WICKLESS_MIN and (np.abs(h - np.maximum(o, c)) <= GRID_TOL).all() \
+            and (np.abs(l - np.minimum(o, c)) <= GRID_TOL).all():
+        raise FeedError(f"{who}not one of {n} closed bars has a wick (high = max(open, close), low = min(open, close) on "
+                        "every bar): bricks or lines (RENKO / LINE BREAK?), not minutes of trading; nothing was merged",
+                        "bars")
+
+
+def check_chart_type(value, what: str = "") -> None:
+    """The style the page reports for a pane (`tv state`'s chartType; the eval's best-effort `style`).
+    None = the page did not say: `check_batch` is then the only guard."""
+    if value is None:
+        return
+    try:
+        k = int(value)
+    except (TypeError, ValueError):
+        return
+    if k not in CHART_TYPES_OK:
+        name = CHART_TYPES[k] if 0 <= k < len(CHART_TYPES) else str(k)
+        raise FeedError(f"{what + ': ' if what else ''}the pane shows chart type {name}; the store takes plain "
+                        "Candles or Bars only (other styles are not the minute's traded OHLC). Set it to Candles; "
+                        "nothing was merged", "bars")
+
+
 @dataclass
 class Poll:
     closed: pd.DataFrame                  # bars that can no longer change
@@ -593,7 +766,9 @@ def _js(n: int) -> str:
             "for(var i=0;i<all.length;i++){try{var ms=all[i].model().mainSeries();var b=ms.bars();"
             "var end=b.lastIndex();var start=Math.max(b.firstIndex(),end-n+1);var rows=[];"
             "for(var k=start;k<=end;k++){var v=b.valueAt(k);if(v)rows.push([v[0],v[1],v[2],v[3],v[4],v[5]||0]);}"
-            "out.push({index:i,symbol:ms.symbol(),resolution:ms.interval(),bars:rows});}"
+            "var st=null;try{st=ms.style();}catch(e1){}"
+            "if(typeof st!=='number'){try{st=ms.properties().childs().style.value();}catch(e2){st=null;}}"
+            "out.push({index:i,symbol:ms.symbol(),resolution:ms.interval(),style:(typeof st==='number'?st:null),bars:rows});}"
             "catch(e){out.push({index:i,error:String(e&&e.message||e)});}}return {panes:out};})()")
 
 
@@ -604,11 +779,13 @@ class LiveTvFeed:
 
     name, live = "tradingview", True
 
-    def __init__(self, cli: TvCli | None = None, symbols: dict | None = None, method: str = "eval"):
+    def __init__(self, cli: TvCli | None = None, symbols: dict | None = None, method: str = "eval",
+                 ticks: dict | None = None):
         if method not in ("eval", "focus"):
             raise ValueError("LiveTvFeed: method is 'eval' or 'focus'")
         self.cli = cli or TvCli()
         self.symbols = dict(symbols or SYMBOLS)
+        self.ticks = {**TICK_SIZE, **(ticks or {})}     # a test on hand-built prices names its own grid
         self.method = method
         self.panes: dict[str, int] = {}
 
@@ -658,6 +835,8 @@ class LiveTvFeed:
             try:
                 if p.get("error"):
                     raise FeedError(f"{inst} pane: {p['error']}")
+                check_chart_type(p.get("style"), inst)
+                check_batch(p.get("bars") or [], self.ticks.get(inst, 0.25), inst)
                 out[inst] = _split(_bars_frame(p.get("bars") or []))
             except FeedError as exc:
                 out[inst] = exc
@@ -673,7 +852,9 @@ class LiveTvFeed:
                 if not self._is(st.get("symbol"), self.symbols[inst]) or str(st.get("resolution")) != "1":
                     raise FeedError(f"after focusing pane {self.panes[inst]} the active chart is "
                                     f"{st.get('symbol')} @ {st.get('resolution')}, not {self.symbols[inst]} @ 1", "layout")
+                check_chart_type(st.get("chartType", st.get("chart_type")), inst)
                 bars = self.cli.call("ohlcv", "-n", str(min(FETCH_MAX_FOCUS, max(FETCH_MIN, int(n))))).get("bars")
+                check_batch(bars or [], self.ticks.get(inst, 0.25), inst)
                 out[inst] = _split(_bars_frame(bars or []))
             except FeedError as exc:
                 out[inst] = exc
@@ -966,8 +1147,11 @@ class Runner:
                  journal: J.Journal | None = None, notify=None, background: bool = True,
                  chart: Chart | None = None, inbound="auto", stores: dict | None = None, seeds: dict | None = None,
                  allow_cold: bool = False, accept_holes: bool = False, preview: bool = True, log=None,
-                 keep_awake: bool = True):
+                 keep_awake: bool = True, accept_short_sessions=()):
         self.base = Path(base_dir)
+        #: session days a PERSON says ended early (a holiday close): a trade a crash left open in one of
+        #: them ends at that session's last close instead of refusing the start for want of a 15:55 bar
+        self.accept_short_sessions = {str(d)[:10] for d in (accept_short_sessions or ())}
         self.keep_awake = bool(keep_awake)
         self.feed = feed
         self.live = bool(getattr(feed, "live", False))
@@ -1017,7 +1201,14 @@ class Runner:
         self._awake = False
         self._failing: dict[str, dict] = {}
         self._run_sizes: dict[str, int] = {}
+        self._started = False                           # start_live has returned: a refusal from here on is pushed
+        self._started_at: float | None = None
+        self._abandoned: dict[str, list[dict]] = {i: [] for i in self.instruments}   # past-session fills without an exit
+        self._abandoned_pending: set[str] = set()
+        self._live_told: set[tuple] = set()             # ("alive" | "terminal", session day) already said
+        self._revised: dict[str, dict[str, set]] = {i: {} for i in self.instruments}  # session day -> revised stamps
         self.facts = {"events": {i: {} for i in self.instruments}, "routed_days": {i: 0 for i in self.instruments},
+                      "routed": {i: {} for i in self.instruments},
                       "cold_days": {i: 0 for i in self.instruments}, "bars": {i: 0 for i in self.instruments},
                       "previews": 0, "cycles": 0, "feed_failures": 0, "commands": 0, "prices": 0}
 
@@ -1029,8 +1220,19 @@ class Runner:
                 self.journal.write("run", {"what": "refused", "why": why, **body}, now=now)
         except Exception:
             pass
+        exc = Refused(why)
+        if self.live and self._started:                 # after startup nobody is at the terminal: the box tells
+            self._push_refusal(why)
+            exc.pushed = True
         self._lock.release()
-        raise Refused(why)
+        raise exc
+
+    def _push_refusal(self, why: str) -> None:
+        try:
+            self.pusher.push([{"kind": "status", "fields": {"refused": True},
+                               "text": f"tjr_human REFUSED and is STOPPING — {mask_token(' '.join(str(why).split()))[:900]}"}])
+        except Exception:
+            pass
 
     def _tell_repairs(self, now: float) -> None:
         """A torn last row cut from a store csv is journaled and logged, once."""
@@ -1094,12 +1296,26 @@ class Runner:
                 self._refuse(f"{inst}: the store does not cover the history the levels need — {warm[inst]['reason']} "
                              f"(store {warm[inst]['first_bar']} .. {warm[inst]['last_bar']})", now, warm=warm[inst])
         info = self.mgr.resume(records)
-        unfinished = sorted(s["day"] for s in state["setups"].values()
-                            if s.get("armed") and s.get("day") and
-                            (s["status"] == "live" or ((s["fill"] or s["would_fill"]) and s["benchmarks"] is None)))
-        recent = [d for d in unfinished if pd.Timestamp(today) - pd.Timestamp(d) <= pd.Timedelta(days=7)]
+        # NEVER BY AGE. Every setup that still owes something — an exit, its benchmarks — has its session
+        # re-fed from the store, however long ago it was: a trade a crash left open is closed, not dropped.
+        owing = [s for s in state["setups"].values()
+                 if s.get("armed") and s.get("day") and
+                 (s["status"] == "live" or ((s["fill"] or s["would_fill"]) and s["benchmarks"] is None))]
+        unfinished = sorted(s["day"] for s in owing)
         self.start_day = today
-        first_day = min([today, *recent])
+        self.mgr.restart_day = today                    # an exit of an earlier session found now is `restart_replay`
+        self._started_at = now
+        for s in owing:
+            key = J.file_key(s.get("instrument"))
+            if (s["day"] < today and s["skip"] is None and s["exit"] is None and key in self._abandoned
+                    and (s["fill"] is not None or (s["preview"] is not None and s["invalidated"] is None))):
+                entry = ((s["fill"] or s["preview"] or {}).get("ev") or {}).get("bar_time")
+                self._abandoned[key].append({"setup_id": s["setup_id"], "day": s["day"], "entry_bar": entry})
+                self._abandoned_pending.add(key)
+        for r in records:
+            if r.get("kind") == "run" and r.get("what") == "liveness" and r.get("day"):
+                self._live_told.add((str(r.get("part")), str(r["day"])))
+        first_day = min([today, *unfinished])
         for inst in self.instruments:                   # history: fed, never routed
             frame = self.stores[inst].frame
             if len(frame):
@@ -1128,6 +1344,14 @@ class Runner:
                             "(a decision the record still owes: DESIGN-tjr-human.md section 2.4 / 9.6)")
         if bad_lines:
             warn.append(f"the journal has {bad_lines} torn line(s) — a write was cut short; they are skipped, never repaired")
+        for inst in self.instruments:
+            for a in self._abandoned[inst]:
+                warn.append(f"{inst}: the trade of {a['day']} ({a['setup_id']}) has no exit — the process was down. It is "
+                            "closed at the first poll by replaying the stored bars of that session (restart_replay)")
+            for d in sorted({s["day"] for s in owing if J.file_key(s.get("instrument")) == inst and s["day"] < today}):
+                if not len(self.stores[inst].session_rows(d)):
+                    warn.append(f"{inst}: the setup of {d} still owes its benchmarks and the store holds no bar of "
+                                "that session — backfill it (detect --backfill)")
         problem = telegram_problem()
         if problem is not None and os.environ.get("TELEGRAM_BOT_TOKEN"):
             warn.append(f"Telegram: {problem}")
@@ -1148,10 +1372,71 @@ class Runner:
                                 for i in self.instruments},
             "chart": self.chart.enabled, "commit": current.get("commit"), "dirty": bool(current.get("dirty")),
             "prereg_sha256": sha, "target_rule": D.TARGET_RULE, "warnings": warn,
-            "accept_holes": self.accept_holes, "allow_cold": self.allow_cold, "keep_awake": self._awake}, now=now)
+            "accept_holes": self.accept_holes, "allow_cold": self.allow_cold, "keep_awake": self._awake,
+            "abandoned_trades": {i: list(v) for i, v in self._abandoned.items() if v},
+            "accept_short_sessions": sorted(self.accept_short_sessions)}, now=now)
         for w in warn:
             self.log(f"tjr_human WARNING: {w}")
+        self._started = True
         return rec
+
+    # ---- a trade a crash left open ------------------------------------------------------------------------------
+
+    def _abandoned_sessions_held(self, inst: str, now: float) -> None:
+        """After the first merge (the chart gives back the minutes the process missed): does the store
+        hold the session of every abandoned trade through 15:55 ET — EVERY trading minute of it from the
+        entry minute on, not only its last stamp? If not, REFUSE — naming the session and the minutes
+        missing — rather than close the trade on half a session, on a session with a hole in it (the
+        stop or the target may have been hit in the minutes not held, and a wrong exit would enter the
+        pre-registered sample), or leave it open for ever. `--accept-short-session` says a session ENDED
+        early; it never unlocks minutes missing in front of bars the store does hold."""
+        for a in self._abandoned[inst]:
+            done, last, later = self.stores[inst].session_complete(a["day"])
+            gaps = self.stores[inst].session_gaps(a["day"], a.get("entry_bar")) if last is not None else []
+            if gaps:
+                said = "; ".join((f"{g['trading_minutes']} trading minute(s) between {g['after']}Z and {g['before']}Z"
+                                  if g.get("after") else
+                                  f"the minutes from the entry minute {g.get('from')}Z"
+                                  + (f" to {g['before']}Z" if g.get("before") else " on")) for g in gaps[:4])
+                self._refuse(f"{inst}: the trade filled on {a['day']} ({a['setup_id']}) was left open when the process "
+                             f"stopped, and the store does not hold that session continuously from the entry minute "
+                             f"through 15:55 ET — missing: {said}"
+                             + (f" (and {len(gaps) - 4} more)" if len(gaps) > 4 else "")
+                             + ". The stop or the target may have been hit in minutes the store does not hold, so the "
+                             "trade is NOT closed on these bars. Backfill it — detect --backfill "
+                             f"{inst}=<1-minute csv export covering ALL of {a['day']} from the entry minute to 15:55 ET; "
+                             "an export that starts mid-session leaves the hole> — and start again. "
+                             "--accept-short-session does not unlock a hole", now,
+                             session=a["day"], setup_id=a["setup_id"], store_last_of_session=last,
+                             entry_bar=a.get("entry_bar"), missing=gaps[:20], missing_ranges=len(gaps))
+            if done or (later and last is not None and a["day"] in self.accept_short_sessions):
+                continue                                # through 15:55, or an early close a PERSON named for this day
+            self._refuse(f"{inst}: the trade filled on {a['day']} ({a['setup_id']}) was left open when the process "
+                         f"stopped, and the store does not hold that session through 15:55 ET (it "
+                         + (f"ends at {last}Z" if last else "holds no bar of it")
+                         + f"). Backfill it — detect --backfill {inst}=<1-minute csv export covering {a['day']}> — "
+                         "and start again: the trade is then closed by replaying that session (the stop in force, "
+                         "the target, the 15:55 flat)"
+                         + (f". If that session really closed early (a holiday), start with --accept-short-session "
+                            f"{a['day']}: the trade then ends at that session's last close" if later and last else ""), now,
+                         session=a["day"], setup_id=a["setup_id"], store_last_of_session=last)
+
+    def _abandoned_closed(self, inst: str, now: float) -> None:
+        """After the re-fed sessions went through the manager: every abandoned trade has an exit (or was
+        voided by its closed entry bar). One that has not is never left silently open."""
+        if inst not in self._abandoned_pending or self._todo[inst]:
+            return
+        setups = J.rebuild(self.journal.records())["setups"]
+        for a in self._abandoned[inst]:
+            st = setups.get(a["setup_id"]) or {}
+            if st.get("exit") is None and st.get("skip") is None and not (st.get("invalidated") or {}).get("void") \
+                    and not (st.get("fill") is None and st.get("preview") is None):
+                self._refuse(f"{inst}: the trade of {a['day']} ({a['setup_id']}) was left open when the process stopped "
+                             "and re-feeding its session from the store did NOT close it: the store no longer "
+                             "reproduces the journaled setup (was it replaced or re-seeded?). Restore the store the "
+                             "trade was taken on, or backfill that session, and start again", now,
+                             session=a["day"], setup_id=a["setup_id"])
+        self._abandoned_pending.discard(inst)
 
     # ---- one closed bar at a time ---------------------------------------------------------------------------
 
@@ -1188,7 +1473,7 @@ class Runner:
         self._journal_quietly("feed", {"what": "day_not_routed", "scope": inst, "day": ev["day"], "holes": holes[:5],
                                        "why": "levels frozen on a store with an unaccepted hole"}, now, instrument=inst)
         self.log(f"tjr_human: {inst} {ev['day']}: NOT ROUTED — the levels froze on a store with a hole {holes[:3]}")
-        self.pusher.push([{"kind": "trade", "fields": {"scope": inst, "day": ev["day"], "holes": holes[:5]},
+        self.pusher.push([{"kind": "status", "fields": {"scope": inst, "day": ev["day"], "holes": holes[:5]},
                            "text": f"tjr_human {inst} {ev['day']}: this day is NOT traded — the 1-minute store has a hole "
                                    f"({holes[0]['trading_minutes']} trading minutes missing after {holes[0]['after']}), "
                                    "so today's levels may be wrong. Restart detect with --backfill "
@@ -1217,12 +1502,39 @@ class Runner:
             for ev in events:
                 kinds = self.facts["events"][inst]
                 kinds[ev["kind"]] = kinds.get(ev["kind"], 0) + 1
-                if self._should_route(inst, ev):
+                route = self._should_route(inst, ev)
+                if self._route.get(inst, False):
+                    self._count_routed(inst, ev)
+                if route:
                     todo.append(("event", stamp, ev))
             todo.append(("bar", stamp, (float(r.open), float(r.high), float(r.low), float(r.close))))
             self._drain(inst, now, notices)
         self._sync_stop(inst, now)
         return notices
+
+    def _count_routed(self, inst: str, ev: dict) -> None:
+        """Counts over ROUTED (warm) sessions, by branch. Counts of events only: nothing here is a price or a result."""
+        book = self.facts["routed"][inst]
+
+        def bump(name: str, key) -> None:
+            d = book.setdefault(name, {})
+            d[str(key)] = d.get(str(key), 0) + 1
+
+        k = ev["kind"]
+        bump("detector_events", k)
+        zone = (ev.get("zone") or {}).get("kind")
+        if k == "sweep":
+            bump("sweeps_by_class_and_direction", f"{(ev.get('level') or {}).get('class')}/{ev.get('direction')}")
+        elif k == "confirmation":
+            bump("confirmations_by_types", "+".join(ev.get("types") or []) or "-")
+        elif k == "signal":
+            bump("signals_by_zone", zone)
+        elif k == "entry_trigger":
+            bump("entry_triggers_by_zone", zone)
+        elif k == "invalidated":
+            bump("invalidations_by_why_and_stage", f"{ev.get('reason')}@{ev.get('stage')}")
+        elif k == "expired":
+            bump("expiries_by_why", ev.get("reason"))
 
     def _drain(self, inst: str, now: float, notices: list) -> None:
         todo = self._todo[inst]
@@ -1295,25 +1607,55 @@ class Runner:
             return []
         m, day = et_clock(frame.index[-1:])
         newest_day = str(day[0])[:10]
-        if not force and not any(newest_day > d or (newest_day == d and int(m[0]) >= FLAT_MINUTES) for d in mine):
-            return []
-        written = self.mgr.close_session(inst, self.stores[inst].tail(), now)
+        due = sorted({d for d in mine if force or newest_day > d or (newest_day == d and int(m[0]) >= FLAT_MINUTES)})
+        written = []
+        for d in due:                                   # oldest first, each on the window of ITS session — never a
+            window = self.stores[inst].session_window(d)    # tail: a fill older than the tail could never be benchmarked
+            if window is not None and len(window):
+                written += self.mgr.close_session(inst, window, now)
         out = []
         if written:
             for rec in R.maybe_review(self.journal, now=now, write_text=self.live):
-                out.append({"kind": "trade", "fields": {"review": rec.get("n")},
+                out.append({"kind": "status", "fields": {"review": rec.get("n")},
                             "text": f"tjr_human: interim review at {rec.get('n')} filled trades written "
                                     f"(review-{rec.get('n')}.txt). It decides nothing and changes nothing (section 3.7)."})
         return out
 
     def _command(self, cmd, now: float) -> list[dict]:
         self.facts["commands"] += 1
-        if self.live:
+        if self.live and not self._is_backlog(cmd, now):  # a startup backlog says nothing about the PC clock
             self._cmd_clock(cmd, now)
         out = self.mgr.on_command(cmd, now)
         for inst in self.instruments:
             self._sync_stop(inst, now)
         return out
+
+    def _commands(self, cmds: list, now: float) -> list[dict]:
+        """Every command is applied and journaled one by one, as ever. The REPLIES to a backlog — messages
+        sent before this run started and too old to act on, which Telegram hands over in one go at the
+        first getUpdates — are folded into one line with their count: the push queue is single, and a
+        hundred 'too old' answers would sit in it ahead of a real alert."""
+        out: list[dict] = []
+        backlog = 0
+        for cmd in cmds:
+            old = self._is_backlog(cmd, now)
+            got = self._command(cmd, now)
+            if old:                                     # rejected (stale, or unreadable) and journaled as ever; not answered one by one
+                backlog += 1
+                got = [n for n in got if n.get("kind") != "reply"]
+            out += got
+        if backlog:
+            out.append({"kind": "reply", "fields": {"why": "stale", "ignored": backlog},
+                        "text": f"{backlog} old message(s) IGNORED: sent before this run started and more than "
+                                f"{self.mgr.max_command_age_s:.0f} s ago. Each is journaled as rejected; "
+                                "nothing was acted on. Send it again if you still mean it."})
+        return out
+
+    def _is_backlog(self, cmd, now: float) -> bool:
+        """Sent before this run started AND too old to act on: what Telegram kept while nothing was polling."""
+        sent = getattr(cmd, "sent_ts", None)
+        return (self._started_at is not None and sent is not None and float(sent) < self._started_at
+                and now - float(sent) > self.mgr.max_command_age_s)
 
     # ---- live -----------------------------------------------------------------------------------------------
 
@@ -1362,13 +1704,24 @@ class Runner:
                 body = {"scope": key, "failures": st["n"], "seconds": round(now - st["since"], 1), "error": line}
                 self._journal_quietly("run" if run else "feed",
                                       {"what": self._RUN_WHAT[key][1] if run else "still_failing", **body, **extra}, now)
-        # a suspect clock is pushed whenever it happens: the 09:25-10:15 test itself reads that clock
-        if not st["pushed"] and (key == "clock" or self._matters_now(now)):
-            st["pushed"] = True
-            what = self._SAYS.get(key, f"{key}: no bar is being read — no signal can be detected, stops and targets "
-                                       "are not being tested")
-            self.pusher.push([{"kind": "trade", "fields": {"scope": key},
+        # a suspect clock is pushed whenever it happens: the 09:25-10:15 test itself reads that clock; so are
+        # bars that are not plain 1-minute OHLC (a chart style): until it is fixed nothing can be merged
+        m, day = et_minute_and_day(now)
+        what = self._SAYS.get(key, f"{key}: no bar is being read — no signal can be detected, stops and targets "
+                                   "are not being tested")
+        if not st["pushed"] and (key == "clock" or getattr(exc, "kind", None) == "bars" or self._matters_now(now)):
+            st["pushed"], st["pushed_day"] = True, day
+            self.pusher.push([{"kind": "status", "fields": {"scope": key},
                                "text": f"tjr_human FAILING since {J.iso_ms(st['since'])[11:19]} UTC — {what}. {line[:200]}"}])
+        elif st["pushed"] and st.get("pushed_day") != day and self._trading_hours(m, day):
+            st["pushed_day"] = day                       # once per trading day while it lasts: never a silent week
+            self.pusher.push([{"kind": "status", "fields": {"scope": key, "failures": st["n"]},
+                               "text": f"tjr_human STILL FAILING since {J.iso_ms(st['since'])[:19]}Z "
+                                       f"({st['n']} failures) — {what}. {line[:200]}"}])
+
+    @staticmethod
+    def _trading_hours(m: int, day: str) -> bool:
+        return pd.Timestamp(day).weekday() < 5 and ALIVE_AT <= m < DAY_END
 
     def _feed_ok(self, key: str, now: float) -> None:
         st = self._failing.pop(key, None)
@@ -1379,7 +1732,7 @@ class Runner:
             else:
                 self._journal_quietly("feed", {"what": "recovered", **body}, now)
             if st.get("pushed"):
-                self.pusher.push([{"kind": "trade", "fields": {"scope": key},
+                self.pusher.push([{"kind": "status", "fields": {"scope": key},
                                    "text": f"tjr_human RECOVERED: {key} after {int(now - st['since'])} s "
                                            f"({st['n']} failure(s))"}])
 
@@ -1438,7 +1791,8 @@ class Runner:
     def _cmd_clock(self, cmd, now: float) -> None:
         """The PC clock against Telegram's own message date (whole seconds, never
         later than the true receipt). Dated AFTER the receipt: the PC clock is slow,
-        and the STOP window and the SKIP boundary stretch by that much. Two commands
+        and the STOP window stretches by that much (the SKIP boundary does not: a fill is voided on
+        Telegram's date only, `trade._skip_can_void`). Two commands
         running older than the stale limit: the clock is fast, or delivery is slow."""
         sent = getattr(cmd, "sent_ts", None)
         if sent is None:
@@ -1477,7 +1831,7 @@ class Runner:
         if key in self._holes_told or inst not in self._holes_checked or not self._matters_now(now):
             return                                       # before the first check the start rule (refuse / accept) speaks
         self._holes_told.add(key)
-        self.pusher.push([{"kind": "trade", "fields": {"scope": inst, "hole": hole},
+        self.pusher.push([{"kind": "status", "fields": {"scope": inst, "hole": hole},
                            "text": f"tjr_human {inst}: HOLE in the 1-minute store — {hole.get('trading_minutes')} trading "
                                    f"minutes missing after {hole.get('after')}Z. The store never fills it by itself; a day "
                                    "whose levels depend on it is not traded (restart with --backfill, or --accept-holes)."}])
@@ -1546,6 +1900,7 @@ class Runner:
             except (FeedError, OSError) as exc:         # OSError: the store csv is held by another program
                 self._feed_failed(inst, exc, now)
                 continue
+            self._note_revised(inst, info)
             self._bar_clock(inst, got.forming, now)
             # a chart that answers but no longer delivers bars: the same state machine as a failing CLI
             newest = self.stores[inst].last
@@ -1573,17 +1928,128 @@ class Runner:
                 if holes:
                     self.journal.write("feed", {"what": "holes_accepted", "holes": holes}, instrument=inst, now=now)
                     self._accepted_holes |= {(inst, h["after"], h["before"]) for h in holes}
+                self._abandoned_sessions_held(inst, now)
                 self._holes_checked.add(inst)
             rows = self.stores[inst].after(self._fed[inst])
             self._process(inst, rows, now, notices)
+            self._abandoned_closed(inst, now)
             if not stalled:                             # a stale forming bar is not a price: no preview, no EXIT NOW fill
                 notices += self._forming(inst, got.forming, now)
             notices += self._close_sessions(inst, now)
         self._watch_clock(now)
-        for cmd in (self.inbound.drain() if self.inbound is not None else []):
-            notices += self._command(cmd, now)
+        notices += self._commands(self.inbound.drain() if self.inbound is not None else [], now)
         self._maybe_weekly(now)
+        self._flush_revised(now)
+        self._liveness(now, notices)
         return notices
+
+    # ---- bars the chart revised after the store took them ---------------------------------------------------------
+
+    def _note_revised(self, inst: str, info: dict) -> None:
+        stamps = info.get("revised_stamps") or []
+        if not len(stamps):
+            return
+        _, day = et_clock(pd.DatetimeIndex(stamps))
+        for ts, d in zip(stamps, day):
+            self._revised[inst].setdefault(str(d)[:10], set()).add(pd.Timestamp(ts).isoformat())
+
+    def _flush_revised(self, now: float, final: bool = False) -> None:
+        """One `feed` record per instrument per session: how many bars the chart showed differently from
+        what the store already held, and the first and the last of them. Written when the session is over
+        (and, `partial`, when the run stops inside it). The store is append-only: it is NOT rewritten —
+        what the detector saw stays what the record holds."""
+        _, today = et_minute_and_day(now)
+        for inst in self.instruments:
+            for d in sorted(self._revised[inst]):
+                if not final and d >= today:
+                    continue
+                stamps = sorted(self._revised[inst].pop(d))
+                self._journal_quietly("feed", {"what": "revised_upstream", "day": d, "count": len(stamps),
+                                               "first": stamps[0], "last": stamps[-1], "partial": bool(final and d >= today),
+                                               "store_rewritten": False}, now, instrument=inst)
+
+    # ---- alive is said, not assumed ---------------------------------------------------------------------------------
+
+    def _liveness(self, now: float, notices: list) -> None:
+        if not self.live:
+            return
+        m, day = et_minute_and_day(now)
+        if not self._trading_hours(m, day):
+            return
+        if ("alive", day) not in self._live_told:
+            self._live_told.add(("alive", day))
+            notices.append(self._alive_notice(now, m, day))
+        if m >= TERMINAL_AT and ("terminal", day) not in self._live_told:
+            lines, settled = self._terminal_lines(day)
+            if settled or m >= TERMINAL_LATEST:
+                self._live_told.add(("terminal", day))
+                self._journal_quietly("run", {"what": "liveness", "part": "terminal", "day": day, "lines": lines}, now)
+                if lines:
+                    notices.append({"kind": "status", "fields": {"day": day},
+                                    "text": f"tjr_human {day} {D.hhmm(m)} ET — no fill: " + " | ".join(lines)})
+
+    def _alive_notice(self, now: float, m: int, day: str) -> dict:
+        per, body = [], {}
+        for inst in self.instruments:
+            last = self.stores[inst].last
+            behind = stalled_minutes(last, now) if last is not None else None
+            try:
+                warm = bool(check_warm(self.stores[inst].frame, for_day=day)["ok"])
+            except Exception:
+                warm = False
+            body[inst] = {"store_last": last.isoformat() if last is not None else None, "trading_minutes_behind": behind,
+                          "warm": warm}
+            per.append(f"{inst}: store to " + (f"{last:%H:%M}Z, {behind} trading min behind" if last is not None else "EMPTY")
+                       + f", warm {'yes' if warm else 'NO'}")
+        try:
+            filled = int(J.filled_count(self.journal.records()))
+        except Exception:
+            filled = None
+        failing = sorted(self._failing)
+        self._journal_quietly("run", {"what": "liveness", "part": "alive", "day": day, "mode": "armed" if self.mgr.armed
+                                      else "observe", "filled": filled, "sample": R.SAMPLE, "instruments": body,
+                                      "failing": failing}, now)
+        return {"kind": "status", "fields": {"day": day, "filled": filled},
+                "text": f"tjr_human ALIVE {day} {D.hhmm(m)} ET — mode "
+                        f"{'ARMED' if self.mgr.armed else 'OBSERVE (no entry is taken)'}; filled "
+                        f"{'?' if filled is None else filled} of {R.SAMPLE}; " + "; ".join(per)
+                        + ("; OPEN PROBLEMS: " + ", ".join(failing) if failing else "; no open problem")}
+
+    def _terminal_lines(self, day: str) -> tuple[list[str], bool]:
+        """One line per instrument that did not fill today: its terminal event and why. Event names and
+        reasons only. (lines, every instrument has reached a terminal state)."""
+        lines, settled = [], True
+        for inst in self.instruments:
+            tr = self.mgr.trade(inst)
+            mine = tr if tr is not None and tr.day == day else None
+            if mine is not None and mine.fill is not None and mine.phase in ("live", "closed"):
+                continue                                # it filled: the trade alerts speak for it
+            evs = []
+            for e in reversed(self.det[inst].events):
+                if e.get("day") != day:
+                    break
+                evs.append(e)
+            if not any(e["kind"] == "levels" for e in evs):
+                lines.append(f"{inst}: no levels today — the 09:29 bar never reached the detector (the feed?)")
+            elif not self._route.get(inst, False):
+                lines.append(f"{inst}: not routed today (a cold store or an unaccepted hole): nothing could be traded")
+            elif mine is not None and mine.phase == "skipped":
+                lines.append(f"{inst}: skipped")
+            else:
+                last = next((e for e in evs if e["kind"] in ("no_sweep", "expired", "invalidated", "fill")), None)
+                if last is None:
+                    settled = False
+                    lines.append(f"{inst}: no terminal event yet (detector stage {self.det[inst].snapshot().get('stage')})")
+                elif last["kind"] == "no_sweep":
+                    lines.append(f"{inst}: no_sweep ({last.get('reason')})")
+                elif last["kind"] == "expired":
+                    lines.append(f"{inst}: expired ({last.get('reason')}; {last.get('because')})")
+                elif last["kind"] == "invalidated":
+                    lines.append(f"{inst}: invalidated ({last.get('reason')} at stage {last.get('stage')})")
+                else:
+                    lines.append(f"{inst}: a fill was seen and NOT taken ("
+                                 + ("observe mode" if mine is None or mine.phase == "observe" else mine.phase) + ")")
+        return lines, settled
 
     def _maybe_weekly(self, now: float) -> None:
         """Section 3.6: Sunday, from the journal, by the box — once, as a file beside the journal."""
@@ -1595,7 +2061,7 @@ class Runner:
             return
         try:
             path.write_text(R.weekly(self.journal.records(), now=now)["text"] + "\n", encoding="utf-8")
-            self.pusher.push([{"kind": "trade", "text": f"tjr_human: weekly report written ({path.name})", "fields": {}}])
+            self.pusher.push([{"kind": "status", "text": f"tjr_human: weekly report written ({path.name})", "fields": {}}])
         except Exception as exc:
             self.log(f"tjr_human: weekly report failed: {type(exc).__name__}: {exc}")
 
@@ -1605,10 +2071,7 @@ class Runner:
             cmds = self.inbound.drain() if self.inbound is not None else []
             if cmds:
                 now = float(self.clock())
-                notices = []
-                for c in cmds:
-                    notices += self._command(c, now)
-                self.pusher.push(notices)
+                self.pusher.push(self._commands(cmds, now))
                 if any(t.exit_request is not None for t in self.mgr.open_trades()):
                     return                                  # EXIT NOW: go and observe a price
             self.sleep(min(0.5, max(0.0, end - float(self.clock()))))
@@ -1635,6 +2098,10 @@ class Runner:
                 self._wait(poll_interval(float(self.clock()), self.mgr.needs_fast_polling()))
         except KeyboardInterrupt:
             self.log("tjr_human: stopping (the next start journals the gap)")
+        except Refused as exc:                          # raised after startup: pushed before the process ends
+            if started and not getattr(exc, "pushed", False):
+                self._push_refusal(str(exc))
+            raise
         finally:
             if self._awake:
                 keep_awake(False)
@@ -1643,6 +2110,11 @@ class Runner:
         return self.machinery_facts()
 
     def stop(self, journal_it: bool = True) -> None:
+        try:
+            if journal_it and self.live:
+                self._flush_revised(float(self.clock()), final=True)
+        except Exception:
+            pass
         try:
             if journal_it:
                 self.journal.write("run", {"what": "stop", "cycles": self.facts["cycles"],
@@ -1760,11 +2232,17 @@ class Runner:
             "mode": "live" if self.live else "replay", "armed": self.mgr.armed,
             "instruments": {i: {"bars": self.facts["bars"][i], "routed_days": self.facts["routed_days"][i],
                                 "cold_days_not_routed": self.facts["cold_days"][i],
+                                "detector_events_basis": "ALL sessions fed, cold and routed",
                                 "detector_events": dict(sorted(self.facts["events"][i].items())),
+                                "routed_sessions": {"basis": "ROUTED (warm) sessions only",
+                                                    **{k: dict(sorted(v.items())) for k, v in
+                                                       sorted(self.facts["routed"][i].items())}},
                                 "detector": self.det[i].snapshot()} for i in self.instruments},
-            "setups": {k: st["counts"][k] for k in ("signals", "filled", "skipped", "invalidated", "expired",
-                                                    "observe_records")},
-            "trades": {"filled": st["filled"], "exit_records": by_kind.get("exit", 0),
+            "setups": {"basis": "ROUTED (warm) sessions only, from the journal",
+                       **{k: st["counts"][k] for k in ("signals", "filled", "skipped", "invalidated", "expired",
+                                                        "observe_records")}},
+            "trades": {"basis": "ROUTED (warm) sessions only, from the journal",
+                       "filled": st["filled"], "exit_records": by_kind.get("exit", 0),
                        "benchmarks_records": by_kind.get("benchmarks", 0), "open_at_end": len(st["open_trades"]),
                        "awaiting_benchmarks": len(st["awaiting_benchmarks"]), "previews": self.facts["previews"]},
             "commands": {"scripted": scripted, "received": len(inbound),
@@ -1847,7 +2325,8 @@ def journal_is_reportable(records: list[dict]) -> tuple[bool, str]:
 
 
 def live_runner(base_dir=J.DEFAULT_DIR, method: str = "eval", draw: bool = True, accept_holes: bool = False,
-                cli: TvCli | None = None, backfill: dict | None = None, keep_awake: bool = True) -> Runner:
+                cli: TvCli | None = None, backfill: dict | None = None, keep_awake: bool = True,
+                accept_short_sessions=()) -> Runner:
     """The `detect` command's runner: the TradingView feed, the chart layer on, Telegram if it is configured."""
     cli = cli or TvCli()
     feed = LiveTvFeed(cli, method=method)
@@ -1856,7 +2335,8 @@ def live_runner(base_dir=J.DEFAULT_DIR, method: str = "eval", draw: bool = True,
     if who["replay"]:                                 # before anything (a backfill record, the store) is written there
         raise Refused(f"{Path(base_dir)} holds a replay's journal ({who['replay']} record(s)): the live run never "
                       "shares a journal with replayed trades (section 9.8) — use another directory")
-    runner = Runner(base_dir, feed, chart=chart, accept_holes=accept_holes, keep_awake=keep_awake)
+    runner = Runner(base_dir, feed, chart=chart, accept_holes=accept_holes, keep_awake=keep_awake,
+                    accept_short_sessions=accept_short_sessions)
     records = runner.journal.records()
     locked = J.entered_count(records) > 0
     for inst, path in (backfill or {}).items():

@@ -752,7 +752,7 @@ def test_alert_set_env_posts_the_right_payload_and_keeps_the_token_out_of_the_lo
     base = _fresh("alerts-set")
     rec = Recorder()
     alerts._post = rec
-    token, chat = "123456:ABC-fake-token-xyz", "987654321"
+    token, chat = "123456:ABC-fake-token-xyz-0123456789", "987654321"
     with Env(token, chat):
         assert alerts.configured()
         out = alerts.notify(base, "halt", "run HALTED by r1", fields={"rule": "r1", "value": 0.5})
@@ -776,7 +776,7 @@ def test_alert_set_env_posts_the_right_payload_and_keeps_the_token_out_of_the_lo
 
 def test_alert_transport_failure_is_logged_retried_once_and_never_raises():
     base = _fresh("alerts-fail")
-    token = "999:fake-token"
+    token = "99999:fake-token-fake-token-fake"
     rec = Recorder(fail=OSError(f"boom https://api.telegram.org/bot{token}/sendMessage"))
     alerts._post = rec
     with Env(token, "1"):
@@ -1104,7 +1104,7 @@ def test_alert_never_runs_past_its_deadline_when_the_transport_hangs():
         # two attempts, each abandoned at its budget, inside the deadline
         alerts.TIMEOUT_S, alerts.DEADLINE_S, alerts.RETRY_MIN_S = 0.2, 0.5, 0.05
         t = time.monotonic()
-        with Env("111:fake", "1"):
+        with Env("11111:fake-fake-fake-fake-fake", "1"):
             out = alerts.notify(base, "halt", "x HALTED")
         took = time.monotonic() - t
         assert took < 1.0, took
@@ -1116,14 +1116,14 @@ def test_alert_never_runs_past_its_deadline_when_the_transport_hangs():
         # the first attempt eats the deadline: no retry
         calls.clear()
         alerts.TIMEOUT_S, alerts.DEADLINE_S, alerts.RETRY_MIN_S = 0.2, 0.25, 0.1
-        with Env("111:fake", "1"):
+        with Env("11111:fake-fake-fake-fake-fake", "1"):
             out = alerts.notify(base, "fill", "y")
         assert out["telegram"]["attempts"] == 1 and len(calls) == 1
         assert "budget is spent" in out["telegram"]["error"], out
         # a transport that raises inside the worker is reported as before
         alerts.TIMEOUT_S, alerts.DEADLINE_S, alerts.RETRY_MIN_S = saved
         alerts._post = Recorder(fail=OSError("boom"))
-        with Env("111:fake", "1"):
+        with Env("11111:fake-fake-fake-fake-fake", "1"):
             out = alerts.notify(base, "fill", "z")
         assert out["telegram"]["attempts"] == 2 and "OSError: boom" in out["telegram"]["error"]
     finally:
@@ -1140,7 +1140,7 @@ def test_alert_log_line_is_one_line_and_the_push_keeps_the_newlines():
     base = _fresh("alerts-flat")
     rec = Recorder()
     alerts._post = rec
-    with Env("111:fake", "1"):
+    with Env("11111:fake-fake-fake-fake-fake", "1"):
         out = alerts.notify(base, "stale", "2 things are stale:\n  a is stale\n  b is stale",
                             fields={"count": 2})
     assert out["pushed"] and len(rec.calls) == 1
@@ -1157,7 +1157,7 @@ def test_alert_log_line_is_one_line_and_the_push_keeps_the_newlines():
                                                  "tick_s": 300}), encoding="utf-8")
     rec = Recorder()
     alerts._post = rec
-    with Env("111:fake", "1"):
+    with Env("11111:fake-fake-fake-fake-fake", "1"):
         rep = risk.heartbeat(base2, now=t0)
     assert sorted(rep["push"]["items"]) == ["book.json", "stale"] and rep["push"]["delivered"]
     assert "\n" in rec.calls[0]["body"]["text"]
@@ -1170,7 +1170,7 @@ def test_alert_failed_push_line_is_one_line_whatever_the_transport_said():
     """A 502 page from Telegram's edge is several lines of HTML; the
     `[telegram] push ... failed` line that records it must still be one
     physical line, with the token masked — and so must heartbeat's last_error."""
-    token = "111:fake"
+    token = "11111:fake-fake-fake-fake-fake"
     html = ("<html>\n<head><title>502 Bad Gateway</title></head>\n<body>\n"
             f"bad https://api.telegram.org/bot{token}/sendMessage\n</body></html>\n")
 
@@ -1707,6 +1707,65 @@ def test_cmd_risk_prints_the_floor_and_both_false_trip_rates_and_writes_nothing(
     assert "no floor (vol_target is None)" in text, text
     assert "seed returns," in text and "invested-only" in text, text
     assert "sigma_source=floor" in text and "sigma_source=seed" in text, text
+
+
+def test_alert_malformed_token_is_not_configured_never_echoed_and_nothing_is_sent():
+    """T-4 token hygiene. A token with a trailing CR / LF (a CRLF env file) or a
+    space is not a token: urllib would refuse the URL it makes with a message
+    that spells it out. It is NOT CONFIGURED — one alerts.log line says malformed,
+    never the value — nothing is sent, and no spelling of it reaches stderr,
+    alerts.log, the returned dict or an exception text."""
+    import contextlib
+    import urllib.parse
+    good = "424242:TEST-ONLY-not-a-token-0123456789"
+    assert alerts.token_ok(good) and alerts.TOKEN_SHAPE.pattern == r"^[0-9]{5,}:[A-Za-z0-9_-]{20,}$"
+    for shape in ("1234:" + "a" * 30, "123456:" + "a" * 19, "123456:" + "a" * 20 + "!", "abcdef:" + "a" * 30,
+                  "123456" + "a" * 30, good + "\n", good + "\r", " " + good, ""):
+        assert not alerts.token_ok(shape), repr(shape)
+    bads = [good + "\r", good + "\n", good + "\r\n", good + " ", " " + good, good[:20] + " " + good[20:],
+            "   ", "\r\n"]
+    for i, bad in enumerate(bads):
+        base = _fresh(f"alerts-malformed-{i}")
+        rec = Recorder(fail=AssertionError("transport must not be called"))
+        alerts._post = rec
+        alerts._malformed_told.clear()
+        err = io.StringIO()
+        with Env(bad, " 987654321\r\n"), contextlib.redirect_stderr(err):
+            assert not alerts.configured() and alerts.credentials() == (None, None)
+            outs = [alerts.notify(base, "halt", "rr-x halted"), alerts.notify(base, "fill", "second")]
+            direct = alerts._send("never built")
+            problem = alerts.token_problem()
+        assert rec.calls == [] and direct["sent"] is False and direct["attempts"] == 0
+        assert all(o["logged"] and not o["pushed"] for o in outs)
+        log = (base / alerts.ALERTS_FILE).read_text(encoding="utf-8")
+        blank = not bad.strip()
+        assert ("not set" in problem) if blank else ("malformed" in problem)
+        # ONE line says malformed (not one per alert), and the alerts themselves are still logged
+        assert log.count("is malformed") == (0 if blank else 1) and log.count("ALERT ") == (2 if blank else 3), log
+        assert "[halt] rr-x halted" in log and "[fill] second" in log
+        for place in (err.getvalue(), log, json.dumps(outs), json.dumps(direct), problem):
+            for form in (good, bad, bad.strip(), urllib.parse.quote(bad, safe=""), repr(bad)[1:-1]):
+                assert len(form) < 6 or form not in place, (i, form)
+    # the masks: raw, stripped and the percent-encoded form of each, in an exception text
+    bad = good + "\r\n"
+    with Env(bad, "1"):
+        for leak in (f"InvalidURL: URL can't contain control characters. '/bot{bad!r}/sendMessage'",
+                     f"boom https://api.telegram.org/bot{urllib.parse.quote(bad, safe='')}/sendMessage",
+                     f"boom https://api.telegram.org/bot{good}/sendMessage", f"x {bad} y"):
+            masked = alerts._mask(leak)
+            assert good not in masked and urllib.parse.quote(bad, safe="") not in masked and "<token>" in masked, masked
+    # a message that carries the token (a caller's bug) never reaches the log or stderr
+    base = _fresh("alerts-malformed-msg")
+    err = io.StringIO()
+    alerts._post = Recorder()
+    with Env(good, " 42 "), contextlib.redirect_stderr(err):
+        assert alerts.configured() and alerts.credentials() == (good, "42")          # the chat id is stripped
+        out = alerts.notify(base, "book", f"oops {good}")
+        sent = alerts.notify(base, "halt", "ok")
+    assert sent["pushed"] and alerts._post.calls[0]["body"]["chat_id"] == "42"
+    assert good not in err.getvalue() and good not in (base / alerts.ALERTS_FILE).read_text(encoding="utf-8")
+    assert good not in json.dumps(out) and good not in json.dumps(sent)
+    alerts._malformed_told.clear()
 
 
 def _main() -> int:

@@ -11,7 +11,9 @@ and owns no clock, no feed and no network of its own:
     on_command(cmd, now)               a parsed human command
 
 Every method returns a list of notices `{"kind": "signal"|"trade"|"reply",
-"text", "fields"}` for the runner to push through `quantlab.alerts.notify`;
+"text", "fields"}` for the runner to push through `quantlab.alerts.notify`
+("trade" is the fill, the stop set and the exit; what the RUNNER has to say about
+itself — alive, failing, a hole, a refusal — is its own kind, "status");
 nothing here can delay the detector.
 
 THE STOP, precisely. A stop has a time from which the market is tested against it:
@@ -47,6 +49,34 @@ close of the next bar that closes after the command — in every case AFTER the
 stop and target tests of that minute: if the forming bar's running range has
 already reached the stop in force (or T1), that is the exit, not the later price. Realised R is against the
 initial stop, net of the section 9.2 round trip on the entry notional.
+
+SKIP AND STOP READ ONE CLOCK. When a command was made is Telegram's own date of
+the message when that is not later than the receipt, else the PC's time (`t_cmd`).
+STOP has always been judged by it; SKIP is too: a SKIP dated BEFORE the fill time
+is honoured even when it is delivered after the (provisional) fill — the fill is
+void, the setup is a skip, followed to the end and benchmarked as one, and the
+record carries both times. A SKIP dated at or after the fill is `skip_after_fill`.
+Delivery slower than MAX_COMMAND_AGE_S is `stale`, as for every command.
+
+A FILL IS VOIDED ON TELEGRAM'S DATE ONLY, never on the PC's clock. The fill time is
+a bar stamp (true time); a PC clock that runs slow would put a SKIP sent AFTER the
+fill before it. So a SKIP that reaches a filled setup voids the fill only when it
+carries Telegram's date and that date is at or after the moment the signal was
+knowable and before the fill time. A message dated after its receipt proves the PC
+slow: the date, not the PC time, is what the SKIP boundary reads (`_skip_clock`).
+A SKIP without Telegram's date never voids a fill. Both clocks are journaled.
+
+A SKIP THAT NAMES NO INSTRUMENT is routed on the same message clock, not by the
+phase each setup happens to be in when the message is received: the candidates are
+the setups whose signal was knowable when the message was made and that had not
+filled by then. One: it is acted on. Several: `ambiguous_instrument`. None: the
+setup it could have meant answers `skip_after_fill`, or `no_setup`.
+
+A TRADE LEFT OPEN BY A CRASH is never abandoned: on the next start the runner
+re-feeds its session from the store and the bars the process missed are tested
+against the stop in force, the target and the 15:55 flat. When that session is a
+PAST one (`restart_day`), the exit is journaled with reason `restart_replay`
+(`replayed_reason` says which of the three it was): the human had no chance to act.
 
 Observe mode (not armed): everything is journaled as `observe`, no entry is
 taken, commands are rejected. A setup is armed or not at its SIGNAL; arming
@@ -89,14 +119,14 @@ def _notice(kind: str, text: str, fields: dict | None = None) -> dict:
 
 def send_notices(base_dir, notices: list[dict], notify=None) -> list[dict]:
     """Push notices through `quantlab.alerts.notify` (T-4's transport and its 20 s
-    bound). The three kinds are in alerts.PUSH_KINDS. Never raises."""
+    bound). The kinds (signal, trade, reply, and the runner's status) are in alerts.PUSH_KINDS. Never raises."""
     real = notify is None
     if real:
         from ..alerts import notify as _n
         notify = _n
     # A token with a CR / LF / space in it makes urllib refuse the URL with a message
-    # that spells the token out, and alerts._mask does not catch the escaped form:
-    # such a token is "not configured" here — the alert is logged, never pushed.
+    # that spells the token out. quantlab.alerts treats such a token as not configured
+    # itself; this keeps a malformed CHAT id (which alerts only strips) log-only too.
     log_only = real and telegram_malformed()
     out = []
     for n in notices:
@@ -205,6 +235,9 @@ class TradeManager:
         self._last_unspecified: dict | None = None
         self._seen: dict[tuple, dict] = {}
         self._journaled: dict[str, dict] = {}
+        #: the session day the live run started in. A trade of an EARLIER day that is closed now is
+        #: closed by replaying stored bars after a restart: nobody could act on it (`_close`).
+        self.restart_day: str | None = None
 
     # ────────────────────────────── plumbing ──────────────────────────────
 
@@ -234,7 +267,13 @@ class TradeManager:
         """After `resume`: is this detector event already in the journal? The runner
         routes an event of an EARLIER day only when it is — such a day is re-fed to
         put a trade back, never to take a new entry after the fact."""
-        return (ev.get("setup_id"), ev.get("kind"), ev.get("bar_time")) in self._seen
+        if (ev.get("setup_id"), ev.get("kind"), ev.get("bar_time")) in self._seen:
+            return True
+        # the process died inside the entry minute: the provisional fill is journaled, the closed bar
+        # that confirms (or voids) it was never seen. That trade was ENTERED — it is put back too.
+        s = self._journaled.get(ev.get("setup_id"))
+        return bool(s and ev.get("kind") in ("fill", "invalidated") and s.get("armed") and s.get("skip") is None
+                    and s.get("preview") is not None and s.get("fill") is None and s.get("exit") is None)
 
     def note_price(self, instrument: str, price: float) -> None:
         """Remember an observed price (the `market_price` of the action records, the
@@ -297,6 +336,9 @@ class TradeManager:
             return
         if s["skip"] is not None:
             tr.phase, tr.skip = "skipped", s["skip"]
+        elif s.get("preview") is not None and s.get("fill") is None and s.get("exit") is None \
+                and s.get("invalidated") is None:
+            self._resume_preview(tr, s["preview"])
         resolved = {r.get("command_seq") for r in s["stop_sets"] + s["rejects"]}
         for c in s["commands"]:
             if c.get("stage") == "stop_pending":
@@ -308,6 +350,22 @@ class TradeManager:
             tr.stop_used = True
         if s["benchmarks"] is not None:
             tr.benchmarked = True
+
+    def _resume_preview(self, tr: Trade, rec: dict) -> None:
+        """The journal holds a provisional fill and nothing after it: the trade is put back as it
+        stood, so the closed entry bar confirms, corrects or voids it exactly as it would have."""
+        ev = rec.get("ev") or {}
+        if not ev.get("stops") or ev.get("entry") is None:
+            return
+        tr.fill, tr.provisional = ev, True
+        self._set_entry(tr, ev)
+        e0 = tr.entry_epoch
+        tr.hist = [{"price": float(tr.stops["wick"]), "mode": "wick", "source": "default", "eff_tick": e0, "eff_bar": e0}]
+        tr.phase = "live"
+        tr.best = tr.worst = tr.entry
+        if tr not in self._awaiting:
+            self._awaiting.append(tr)
+        self._restore_live(tr)
 
     def _restore_live(self, tr: Trade) -> None:
         s = self._journaled.get(tr.setup_id)
@@ -691,11 +749,21 @@ class TradeManager:
                 "command_seq": req["seq"] if req else None,
                 "human_reason": req["reason"] if req else None,
                 "requested_ts": J.iso_ms(req["ts"]) if req else None}
+        replayed = self.restart_day is not None and str(tr.day) < str(self.restart_day)
+        if replayed:                                                # a past session, closed from the store after a restart
+            body.update(reason="restart_replay", replayed_reason=reason, human_could_act=False,
+                        note="the process was down: this exit was found by replaying the stored closed bars of "
+                             "that session against the stop in force, the target and the 15:55 flat. "
+                             "The human had no chance to act on this trade after the process stopped.")
         tr.exit = self._write("exit", body, tr, t)
         tr.phase = "closed"
         tr.exit_request = None
         text = (f"{tr.instrument} EXIT {reason} @ {_px(px)} — {body['r']:+.2f} R net "
                 f"(against {STOP_LABEL.get(init['mode'], 'price')} stop {_px(stop0)})")
+        if replayed:
+            text = (f"{tr.instrument} {tr.day} EXIT restart_replay ({reason}) @ {_px(px)} — {body['r']:+.2f} R net "
+                    f"(against {STOP_LABEL.get(init['mode'], 'price')} stop {_px(stop0)}). The process was down: "
+                    "found by replaying the stored bars of that session; you had no chance to act")
         if voided:
             text += f"; the stop chosen after the fill ({_px(voided[-1]['price'])}) never took effect: " \
                     "the wick stop is live in the entry minute"
@@ -728,11 +796,11 @@ class TradeManager:
         if not cmd.ok:
             return self._reject(None, cmd, t, t_cmd, "unparsable", f"{cmd.error}. {USAGE}")
         if t - t_cmd > self.max_command_age_s:
-            return self._reject(self._pick(cmd)[0], cmd, t, t_cmd, "stale",
+            return self._reject(self._pick(cmd, t)[0], cmd, t, t_cmd, "stale",
                                 f"{cmd.action} was sent {t - t_cmd:.0f} s ago — too old to act on")
         if cmd.action == "REASON":
             return self._attach_reason(cmd, t)
-        tr, why = self._pick(cmd)
+        tr, why = self._pick(cmd, t)
         if tr is None:
             return self._reject(None, cmd, t, t_cmd, why,
                                 "say which: NQ or ES" if why == "ambiguous_instrument" else "no setup to act on")
@@ -741,10 +809,55 @@ class TradeManager:
         handler = {"SKIP": self._skip, "STOP": self._stop, "MOVE_STOP": self._move, "EXIT_NOW": self._exit_now}
         return handler[cmd.action](tr, cmd, t, t_cmd)
 
-    def _pick(self, cmd: Command) -> tuple[Trade | None, str]:
+    @staticmethod
+    def _skip_clock(cmd: Command, t: float) -> float:
+        """When a SKIP was made, for the SKIP boundary and for routing: Telegram's own date whenever
+        the message has one — also when it is LATER than the receipt, which proves the PC clock slow
+        (the date is whole seconds, never later than the true sending) — else the PC's time."""
+        return float(cmd.sent_ts) if cmd.sent_ts is not None else float(t)
+
+    @staticmethod
+    def _signal_known(tr: Trade) -> float:
+        ev = tr.signal or {}
+        try:
+            return J.bar_epoch(ev["knowable_at"]) if ev.get("knowable_at") else -math.inf
+        except Exception:
+            return -math.inf
+
+    def _skip_can_void(self, tr: Trade, cmd: Command) -> bool:
+        """Only Telegram's own date voids a fill: dated once the signal was knowable, before the fill
+        time (a bar stamp, true time). The PC's clock never does — slow, it would put a SKIP sent
+        after the fill before it."""
+        return (tr.fill is not None and not tr.benchmarked and cmd.sent_ts is not None
+                and self._signal_known(tr) <= float(cmd.sent_ts) < tr.entry_epoch)
+
+    def _pick_skip(self, cmd: Command, t: float) -> tuple[Trade | None, str]:
+        """A SKIP that names no instrument, routed on the MESSAGE clock: the setups whose signal was
+        knowable when it was made and that had not filled by then. Never the phase at the receipt —
+        a late-delivered SKIP would go to the other instrument, whose signal did not exist yet."""
+        t_msg = self._skip_clock(cmd, t)
+        known = [x for x in self._trades.values() if x.signal is not None and self._signal_known(x) <= t_msg]
+        open_ = []
+        for x in known:
+            if x.phase == "signal" and (x.entry_at is None or t_msg < x.entry_at):
+                open_.append(x)
+            elif x.phase in ("live", "closed") and self._skip_can_void(x, cmd):
+                open_.append(x)
+        if len(open_) == 1:
+            return open_[0], ""
+        if len(open_) > 1:
+            return None, "ambiguous_instrument"
+        if not known:
+            return None, "no_setup"
+        known.sort(key=lambda x: (x.entry_epoch if x.fill is not None else -1.0, x.setup_id))
+        return known[-1], ""                                        # it answers: skip_after_fill, already_skipped, ...
+
+    def _pick(self, cmd: Command, t: float | None = None) -> tuple[Trade | None, str]:
         if cmd.instrument:
             tr = self._trades.get(J.file_key(cmd.instrument))
             return (tr, "") if tr is not None else (None, "no_setup")
+        if cmd.action == "SKIP":
+            return self._pick_skip(cmd, self._now(t))
         want = {"SKIP": ("signal",), "STOP": ("signal", "live"), "MOVE_STOP": ("live",), "EXIT_NOW": ("live",)}
         fits = [x for x in self._trades.values() if x.phase in want.get(cmd.action, ())]
         if len(fits) == 1:
@@ -795,14 +908,69 @@ class TradeManager:
             return self._reject(tr, cmd, t, t_cmd, "already_skipped", "this setup is already skipped")
         if tr.phase == "dead":
             return self._reject(tr, cmd, t, t_cmd, "setup_dead", "this setup is over; nothing to skip")
-        if tr.phase in ("live", "closed") or (tr.entry_at is not None and t_cmd >= tr.entry_at):
+        t_msg = self._skip_clock(cmd, t)
+        if tr.phase in ("live", "closed"):
+            # THE SAME CLOCK AS STOP: a SKIP made before the fill time is a skip, however late it was
+            # delivered (within the stale limit). The fill it overtook is void — on TELEGRAM'S date
+            # only: the fill time is a bar stamp, and a slow PC clock must never void a fill.
+            if self._skip_can_void(tr, cmd):
+                return self._skip_voids_fill(tr, cmd, t, t_msg)
+            slow = cmd.sent_ts is not None and cmd.sent_ts > t
             return self._reject(tr, cmd, t, t_cmd, "skip_after_fill", "SKIP is from the signal until the fill; "
-                                "the entry has happened. EXIT NOW closes the trade")
+                                "the entry has happened. EXIT NOW closes the trade"
+                                + (f" (Telegram dated your SKIP {cmd.sent_ts - t:.0f} s after this PC's clock "
+                                   "received it: the PC clock is slow, and Telegram's date is what counts)"
+                                   if slow else ""),
+                                {"fill_time": J.iso_ms(tr.entry_epoch), **self._both_clocks(cmd, t, t_msg)})
+        if tr.entry_at is not None and t_msg >= tr.entry_at:
+            return self._reject(tr, cmd, t, t_cmd, "skip_after_fill", "SKIP is from the signal until the fill; "
+                                "the entry has happened. EXIT NOW closes the trade",
+                                {"fill_time": J.iso_ms(tr.entry_at), **self._both_clocks(cmd, t, t_msg)})
         tr.skip = self._write("skip", {**self._outcome(cmd, t_cmd), "stage": "command", "ev": tr.signal,
                                        **self._action_fields(tr, t)}, tr, t)
         tr.phase = "skipped"
         return [_notice("reply", f"{tr.instrument} SKIPPED — followed to the end and journaled with what every "
                                  f"exit would have done.{self._ask(cmd, t)}")]
+
+    @staticmethod
+    def _both_clocks(cmd: Command, t: float, t_msg: float) -> dict:
+        """Both clocks, as journaled with every SKIP judged against a fill: Telegram's date of the
+        message (None when it did not come that way), the PC's time of receipt, and which was read."""
+        sent = cmd.sent_ts
+        return {"message_time": J.iso_ms(t_msg), "received_time": J.iso_ms(t),
+                "telegram_time": J.iso_ms(float(sent)) if sent is not None else None, "pc_time": J.iso_ms(t),
+                "skip_clock": "telegram" if sent is not None else "pc",
+                "pc_clock_behind_s": round(float(sent) - t, 3) if sent is not None and sent > t else None}
+
+    def _skip_voids_fill(self, tr: Trade, cmd: Command, t: float, t_cmd: float) -> list[dict]:
+        """A SKIP dated before the fill time, delivered after the fill. The fill is void and the setup
+        is a skip: followed to the end and benchmarked as one. Journaled BEFORE the state moves, with
+        both times. If the closed entry bar had already confirmed the fill, that fill is what the skip
+        would have filled at; a provisional one waits for its closed bar, as any skip does."""
+        ev, was_provisional, had_exit = tr.fill, tr.provisional, tr.exit
+        tr.skip = self._write("skip", {
+            **self._outcome(cmd, t_cmd), "stage": "command", "ev": tr.signal, "after_fill": True,
+            **self._both_clocks(cmd, t, t_cmd), "fill_time": J.iso_ms(tr.entry_epoch),
+            "seconds_before_fill": round(tr.entry_epoch - t_cmd, 3), "delivery_s": round(t - t_cmd, 3),
+            "voided_fill": {"provisional": bool(was_provisional), "entry": tr.entry, "bar_time": ev.get("bar_time")},
+            "voided_exit_seq": had_exit.get("seq") if isinstance(had_exit, dict) else None,
+            **self._action_fields(tr, t)}, tr, t)
+        if not was_provisional:                                     # the closed bar has spoken: the skip would have filled here
+            self._write("skip", {"event": "fill", "ev": ev, "stage": "would_fill", "after_fill": True}, tr, t)
+        tr.phase = "skipped"
+        tr.hist, tr.exit, tr.exit_request, tr.stop_request = [], None, None, None
+        if was_provisional:
+            tr.fill, tr.provisional, tr.would_fill = None, False, False
+            self._awaiting = [x for x in self._awaiting if x is not tr]
+        else:
+            tr.would_fill = True
+            if tr not in self._awaiting and not tr.benchmarked:
+                self._awaiting.append(tr)
+        return [_notice("reply", f"{tr.instrument} SKIPPED — your SKIP is dated {J.iso_ms(t_cmd)[11:19]} UTC, before "
+                                 f"the fill at {J.iso_ms(tr.entry_epoch)[11:19]} UTC; it arrived {max(0.0, t - t_cmd):.0f} s later. "
+                                 f"The fill is VOID: no trade. Followed to the end and journaled with what every "
+                                 f"exit would have done.{self._ask(cmd, t)}",
+                        {"setup_id": tr.setup_id, "voided_fill": True})]
 
     # ---- STOP ----
 
