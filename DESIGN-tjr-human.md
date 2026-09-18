@@ -647,3 +647,171 @@ when either deploys, before anything is bought.
 
 Sizing, target changes, entry discretion, a live account, a second instrument
 set, and any change to §5 after trade one.
+
+## 9. Build contract for `tjr_human` (2026-09-18, before the code)
+
+### 9.0 What this is, and the rule it is an exception to
+
+`tjr_human` is a strategy that failed the gauntlet (`DESIGN-tjr-intraday.md`
+§12) and is tagged `folklore`. Standing rules 2 and 4 say such a strategy is
+never deployed, and that a paper run is a deployment. T-7 is the user's own,
+explicit exception, made in the message that wrote those rules, and it is
+bounded so that it stays an experiment on the human and not a deployment of
+the strategy: **no order leaves the process** (a simulated ledger — Alpaca
+serves no futures, and no broker is constructed anywhere in this package);
+paper only; 100 filled trades; pre-registered in §5; nothing runs on the VPS;
+nothing takes an entry until the user arms it (§9.7).
+
+### 9.1 Layout
+
+| where | what |
+|---|---|
+| `quantlab/tjr_human/detector.py` | pure and incremental: bars in, events out; no I/O, no clock of its own |
+| `quantlab/tjr_human/exits.py` | the ten mechanical exits of §5 and the random stop, causal replay on the entry-timeframe bars |
+| `quantlab/tjr_human/trade.py` | one trade's state machine and the rules of the four human controls |
+| `quantlab/tjr_human/commands.py` | parse and validate `SKIP`, `STOP`, `MOVE STOP`, `EXIT NOW` and reason codes; the Telegram inbound transport |
+| `quantlab/tjr_human/journal.py` | the JSONL journal, its schema, readers |
+| `quantlab/tjr_human/report.py` | weekly report, interim reviews at 25 and 50, the final test at 100 |
+| `quantlab/tjr_human/chart.py` | display layer through the `tv` CLI; may fail without consequence |
+| `quantlab/tjr_human/runner.py` | the loop: feed → detector → alert → commands → trade → journal |
+| `tjr_human.py` | CLI: `detect`, `replay`, `status`, `report`, `review`, `final`, `arm` |
+| `tests/test_tjr_human.py` | standalone runner, as the other test files |
+
+### 9.2 The signal, on two timeframes
+
+Input is a 1-minute frame per instrument. Structure is read on completed
+5-minute context bars built from it, and on 1-hour and 4-hour bins
+(`primitives.resample_context`), all by clock arithmetic; a forming bar is
+never read. Definitions are those of `tjr_wide_funnel.py --mode final`
+(§2.1, §2.3, §2.5) wherever they apply, and:
+
+| element | timeframe | definition |
+|---|---|---|
+| levels (ASIA, LON, PD, H1, H4 swings, POC_PREV, HVN) | frozen at the 09:25 close | as the funnel; the volume profile is built on the 1-minute bars |
+| sweep | 5-minute context, read at the 1-minute bar that completes it, 09:30–09:49 | per-class test, three classes (§2.5) |
+| confirmation | every 1-minute close after the sweep's completing minute, to 10:09 | `bos`: close beyond the frozen pre-sweep 5-minute swing; `ote`: close beyond extreme + 0.79 × (swing − extreme); `ifvg`: close through a **fresh** opposing 1-minute gap of day D |
+| dealing range, EQ | at the confirmation minute | sweep extreme to the furthest 1-minute extreme since the sweep bar's first minute; EQ the midpoint |
+| zones, in discount / premium | `fvg` on 1-minute bars (on the leg, or later in the window); `eq` with §2.3's excursion (ATR(14) of the 5-minute context at the newest completed context bar) and §2.5's open-side test on the touching minute; `ob` and `breaker` on the 5-minute context | freshest stamp wins, as the funnel |
+| entry trigger | 1-minute | a minute touches the zone in play (for `eq`, having opened on the far side), then that minute or a later one **closes out of the zone in the trade direction**; the entry is the **next minute's open**, which must be stamped 09:50–10:09 |
+| dead setup | 1-minute | price trades beyond the wick stop before the entry → the setup is journaled `invalidated` and the day is done |
+| stops at fill | 5-minute ATR at the newest completed context bar | wick, 1.0 / 1.5 / 2.0 ATR, session — `tjr_intraday.stop_price` |
+| targets | levels frozen at 09:25 | §2.5; **the bot exits the whole position at T1**; T2 is journaled (whether and when it printed), not traded |
+| flat | 1-minute | the 15:55 close |
+
+One setup and one position per instrument per day. Costs are the retail
+futures costs of `DESIGN-tjr-intraday.md` §8 (ES 1 bp, NQ 0.5 bp round trip),
+charged on every simulated fill, the benchmarks' included.
+
+### 9.3 Events and the human's window
+
+`signal` (confirmation and a zone in play: everything §3.2 draws, with
+indicative stop prices) → `armed_entry` is not an event, the bot simply waits →
+`fill` (exact candidate stops) → stop moves, `exit`. The signal is pushed
+through `quantlab.alerts.notify` (T-4's transport and its 20 s bound) and the
+chart is drawn; neither can delay or stop the detector. Three kinds are added
+to the pushed set for this package — `signal`, `trade` (fill, stop set, exit)
+and `reply` (the bot's answer to a command) — and T-4's three are untouched.
+
+| control | accepted | rule |
+|---|---|---|
+| `SKIP [reason]` | from `signal` until the fill | the setup is journaled to the end as if traded, with what every exit would have done |
+| `STOP <wick\|1.0\|1.5\|2.0\|session\|price> [reason]` | from `signal` until 60 s after the fill, once | before the fill a named width is resolved at the fill, a price is validated at the fill; inside [wick, 2.0 ATR] or rejected and logged; nothing valid by the fill → the wick stop is live from the first tick. **The 60 s after the fill are a grace for the message, not for the market: the wick stop is live during them and a trade it stops stays stopped.** To be wider than the wick on the entry bar, choose before the fill |
+| `MOVE STOP <price> [reason]` | in the trade, after the `STOP` window | only in the trade's favour; a widen is rejected and journaled with the requested price |
+| `EXIT NOW [reason]` | in the trade | simulated fill at the next observed price; executed first, reason attached after |
+
+Reason codes are `noise`, `structure_changed`, `news`, `gut`. A command
+without one is executed — latency matters more than bookkeeping — journaled
+as `unspecified`, and the bot asks; a following message that is only a code
+attaches to it. Commands are accepted only from `TELEGRAM_CHAT_ID`; every
+inbound message is journaled, accepted or not. The token is read from the
+environment by the transport and never printed, logged or journaled.
+
+### 9.4 Journal
+
+One JSONL file per instrument-month under `tjr_human_runs/`, append-only,
+every record with a UTC millisecond stamp: `signal`, `command`, `fill`,
+`stop_set`, `stop_move`, `reject`, `exit`, `skip`, `invalidated`,
+`benchmarks` (written after the session closes: each of the ten exits and the
+random stop on that entry, R against its own risk, exit reason, exit time;
+MAE, MFE, whether and when T1 and T2 printed), `review`, `observe`. Fields as
+§3.4. The human writes nothing.
+
+### 9.5 Reports
+
+`report` (weekly, §3.6), `review` (at the 25th and 50th filled trade, §3.7;
+written once each, journaled), `final` (at the 100th: `d_i` against the best
+of ten on all 100 entries through `validate.deflated_sharpe` with
+`n_trials = 14`; pass ≥ 0.95 and `mean(d) > 0`; refuses to run before 100 and
+says how many to go). `status` says where the run is and nothing about
+whether it is winning.
+
+### 9.6 Feed, interim path
+
+The Windows PC, TradingView Desktop, a two-pane layout (NQ1! and ES1!, 1
+minute). The runner reads bars through the repo's `tv` CLI, closed bars only
+(a bar is closed once a newer one exists), merges them into a local 1-minute
+store seeded from `data/{NQ,ES}_1min_tv.csv`, and refuses to start if the
+store does not cover the 20 completed sessions and the 4-hour history the
+levels need (§2.4). It polls every 5 s from 09:25 to 10:15 ET and while in a
+trade, slower otherwise. The chart in replay mode is refused, as
+`TradingViewFeed` refuses it. The same detector runs unchanged on a VPS feed
+when one exists; the monthly cost of that feed goes to the user first.
+
+On the PC there is no systemd to load an environment file. The runner reads
+`TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` from its own process environment
+and from nowhere else; how they get there is a launcher the user writes by
+hand and keeps outside the repo. No file in the repo, no test, no replay and
+no chat session holds, prints or asks for the token.
+
+### 9.7 Observe, then arm
+
+The runner starts in **observe** mode: it detects, alerts, draws and journals
+`observe` records, and takes no entry. Trade one is the start of the
+pre-registered sample, so it needs an act: `tjr_human.py arm --reason "..."`
+writes `ARMED` with the commit hash of the code and the hash of §5; from the
+next signal the bot takes entries and counts. Disarming is refused once a
+trade has filled (§5: nothing changes after trade one); stopping the process
+is always possible and is journaled on restart as a gap.
+
+### 9.8 The offline replay measures the machine, not the strategy
+
+`tjr_human.py replay --csv … --human none|<script.json>` drives the same
+runner over stored 1-minute bars with a simulated clock and a scripted human.
+It exists to test the machinery. **On market data it prints machinery facts
+only** — signals, fills, invalidations, commands accepted and rejected,
+journal integrity, alert and draw calls — and no R, no win rate and no
+per-exit totals: those would be a look at outcomes of a new TJR variant
+across ten exits and two instruments, which is a third round by another
+name, and the mechanical question is closed. Exit arithmetic is verified on
+hand-built days in the tests. A `--show-outcomes` flag exists for synthetic
+data and refuses market data files.
+
+### 9.9 Acceptance
+
+- The detector is causal: truncating the 1-minute frame at any minute —
+  inside a forming 5-minute bar, at a sweep's completing minute, at a
+  confirmation, at a touch, at the closing-out minute, at the fill —
+  reproduces every earlier event and the cut day as of the cut.
+- Fed the same bars in one call or minute by minute, the detector emits the
+  same events.
+- On hand-built days: every control's rule (a `STOP` outside the band, a
+  widen, a second `STOP`, a `SKIP` after the fill, a command from another
+  chat id) is rejected and journaled; a wick stop hit inside the 60 s grace
+  stays hit; `EXIT NOW` fills at the next observed price; the ten exits and
+  the random stop give the R the hand calculation gives.
+- `final` refuses before 100; `review` writes once at 25 and once at 50;
+  `n_trials` is 14 in code and in the printout.
+- No broker, no order, no network except Telegram; with the two variables
+  unset nothing tries the network and the runner still journals.
+- The three existing test files and `run.py --strategy tjr --synthetic
+  --quick` are unchanged; nothing in `quantlab/paper.py`, the registry or
+  the gauntlet is touched.
+
+### 9.10 Choices made where §3 was silent — the user can overrule any before trade one
+
+1. The whole position exits at T1; T2 is journaled only.
+2. `STOP` takes a named width before the fill, and the 60 s after the fill
+   do not suspend the wick stop.
+3. Observe mode until `arm`.
+4. The replay prints no outcomes on market data.
+5. A setup dies if price trades beyond the wick stop before the entry.
