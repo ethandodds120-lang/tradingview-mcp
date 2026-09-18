@@ -37,7 +37,7 @@ state as `{"bar": <last_bar at epoch start>, "equity": <equity then>,
 | rule | statistic | armed when | trips when |
 |---|---|---|---|
 | **R1 profit factor** | over the last **60 closed round trips** of the epoch (`PaperRun.round_trips()`, `exit != "OPEN"`): `PF = Σ pnl⁺ / Σ \|pnl⁻\|`; no losses → `PF = +∞` | 60 closed trades in the epoch | `PF < 1.0` |
-| **R2 equity band** | `σ_bar` = standard deviation of the engine's per-bar net returns for this run's strategy and config over the run's **seed history** (bars with index ≤ `forward_start`, through `engine.run` with the run's `cost_bps`, `vol_target`, `vol_lookback`, `max_leverage`, `rebalance_band`, taking the bars after the vol lookback is populated). `n` = bars in the epoch; `E_0` = equity at the epoch start; `E` = equity now (state, which for routed runs is the mirrored broker equity, so intrabar). The band is **zero-drift**: `ln(E / E_0) < −2 · σ_bar · √n` | `n ≥ 20` | below the band |
+| **R2 equity band** | `σ_bar` = standard deviation of the engine's per-bar net returns for this run's strategy and config over the run's **seed history** (bars with index ≤ `forward_start`, through `engine.run` with the run's `cost_bps`, `vol_target`, `vol_lookback`, `max_leverage`, `rebalance_band`, taking the bars after the vol lookback is populated). `n` = bars in the epoch; `E_0` = equity at the epoch start; `E` = equity now (state, which for routed runs is the mirrored broker equity, so intrabar). The band is **zero-drift**: `ln(E / E_0) < −2 · σ_bar · √n` as first written, **−3.0 · σ_bar · √n since 2026-09-18** (amendments below) | `n ≥ 20` | below the band |
 | **R3 realised vol** | annualised standard deviation of the epoch's per-bar equity returns (`journal` bar records, `equity` field) over the last `vol_lookback` bars, or all epoch bars if fewer; annualised with `data.periods_per_year` of those bars' index | 20 bars in the epoch | `> 2 × vol_target`; disabled, and said so, when `vol_target` is `None` |
 
 Why zero drift in R2: a backtest mean is the number the gauntlet exists to
@@ -77,6 +77,30 @@ actually used, twice: on every seed return, as before, and on the
 holding a position. If that figure is above about 10 % over 250 bars the band
 needs widening, not only flooring — `BAND_SIGMAS` is then the user's next
 decision, with the numbers in §7.
+
+**Second amendment, 2026-09-18 — the band is 3.0 σ, by the user's own test.**
+With the floor in, SOL's chance-trip rate was 2.4 % on all seed returns and
+**39.2 % on the invested-only returns** — still far above the 10 % the user
+set, so by the rule just above the band is widened as well:
+
+```
+trip when  ln(E / E_0) < −3.0 · σ_bar · √n        (BAND_SIGMAS = 3.0)
+```
+
+3.0 is the first round multiple that puts every live run under 10 %, SOL
+included (§7). The reason 2.0 could not: a perfectly healthy zero-drift walk
+whose true σ *is* the band σ crosses a 2 σ√n band at some n between 20 and
+250 **14.6 %** of the time (9.0 % at 2.25, 5.2 % at 2.5, 1.5 % at 3.0) — the
+equity runs only looked fine at 2.0 because the bootstrap kept their seeds'
+strongly positive drift, the very mean this rule refuses to trust. What 3.0
+costs, stated plainly: for a run at 15 % vol the band is about −13 % at 20
+bars, −21 % at 50, −30 % at 100 and −45 % at 250, so R2 is now a brake on a
+run that is badly broken, not a detector of one that is merely not working;
+R1 (profit factor) and R3 (realised vol) are what watch the rest. 2.5 is
+the alternative if more sensitivity is wanted, at about 19 % chance trips
+for SOL. The printed false-trip rate now counts a crossing only from the
+arming bar on — the rule cannot trip before n = 20, so an earlier crossing is
+not a trip.
 
 ### 1.3 What a trip does
 
@@ -262,6 +286,25 @@ for each, sends nothing, tries no network, exit 0.
 already evaluates as R2 tripped and will halt on its next poll — expected on
 a replay rehearsal, not a live event.
 
+**Re-run 2026-09-18, after the σ floor and the 3.0 band** — fresh read-only
+copies taken the same morning (five or six forward bars per run; still
+nothing armed, nothing would halt; md5 of the copies unchanged). 42 tests.
+
+| run | σ seed | σ floor | σ used | chance trip, all seed returns | chance trip, invested-only | invested-only at 2.0 σ, for comparison |
+|---|---|---|---|---|---|---|
+| gld-trend-20260912 | 0.01005 | 0.00945 | seed | 0.1 % | 0.3 % | 7.0 % |
+| qqq-tsmom-20260912 | 0.01057 | 0.00945 | seed | 0.0 % | 0.0 % | 9.0 % |
+| slv-trend-20260912 | 0.01058 | 0.00945 | seed | 0.2 % | 0.4 % | 9.8 % |
+| sol-trend-20260913 | 0.00483 | 0.00785 | **floor** | 0.0 % | **7.1 %** | 39.2 % (71.2 % before the floor) |
+
+Over 250 bars, 1000 block-bootstrap paths, crossings counted from the arming
+bar. SOL at 2.5 σ would be about 19 %. Reference for any honest invested
+run — a driftless Gaussian walk at exactly the band σ, n from 20 to 250:
+14.6 % at 2.0, 9.0 % at 2.25, 5.2 % at 2.5, 2.9 % at 2.75, 1.5 % at 3.0. With
+the seed means removed the equity runs' invested-only rates at 3.0 are 5.0 %
+(GLD), 1.7 % (QQQ) and 10.7 % (SLV) when counted from the first bar, lower
+from the arming bar.
+
 **To install, after the user's go** (deploy/README.md §8–§9): pull on the
 box (the polls start evaluating the rules on the next tick; nothing can arm
 for 20 bars), write `/etc/quantlab/telegram.env` by hand (mode 600), copy
@@ -330,6 +373,20 @@ definition, and nothing is installed until the user has seen it.
   line (a crash mid-write) is skipped with one ALERT rather than raised.
 - R2's `E` on a routed run is the whole paper account, as §1.2 says — so one
   routed run per account and symbol (today: SOL only).
+- The σ floor (§1.2) uses `periods_per_year` of the whole bar store, the same
+  figure R3 uses. It follows the calendar inference: one skipped day in a
+  7-day store reads as a 252-day calendar for a while and steps the floor up
+  about 20 % — which only widens the band. `sigma_source` is `None` where R2
+  has no usable seed σ; the floor never arms the rule. The `risk` journal
+  line written when a rule arms carries `sigma_seed`, `sigma_floor` and
+  `sigma_source`, and on a floored run a different `sigma_bar` and threshold
+  than before; bar records are untouched. Deploying the floor or a new band
+  multiple onto a run that is already armed changes its band with no journal
+  line of its own — not the case for any live run today.
+- The invested-only false-trip rate splices the seed's invested bars into one
+  series, resamples it as if the run were invested for all 250 bars, keeps
+  the seed's drift, and leaves out exit bars (entry costs in, exit costs
+  out). It is an upper-ish bound with the precision of a few hundred bars.
 
 **Halt and resume**
 

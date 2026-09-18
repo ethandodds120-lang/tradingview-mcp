@@ -270,7 +270,7 @@ def test_r2_unarmed_below_20_bars_and_trips_below_the_band():
     r2 = ev["rules"]["r2_equity_band"]
     sigma, n = r2["inputs"]["sigma_bar"], r2["inputs"]["n"]
     assert n == 25 and r2["armed"], r2
-    assert abs(r2["threshold"] - (-2.0 * sigma * np.sqrt(25))) < 1e-6   # both rounded to 8 dp
+    assert abs(r2["threshold"] - (-risk.BAND_SIGMAS * sigma * np.sqrt(25))) < 1e-6   # both rounded to 8 dp
     assert r2["value"] < r2["threshold"] and r2["trip"], r2
     assert ev["tripped"] == "r2_equity_band"
     assert r2["inputs"]["E_0"] == 100_000.0 and r2["inputs"]["E"] == 85_000.0
@@ -1272,7 +1272,9 @@ def test_second_resume_in_another_process_is_not_clobbered_by_a_poll_holding_the
     base = _fresh("resume-subprocess-2")
     _quiet_alerts()
     with Env(None, None):
-        run = make_run(base, "res-sub2", _declining(30, 100_000.0, 85_000.0), equity=85_000.0)
+        # steep enough to cross the band from an epoch that starts at forward bar 5,
+        # whatever BAND_SIGMAS is up to 3 (3 x ~0.0095 x sqrt(25) is about -14 %)
+        run = make_run(base, "res-sub2", _declining(30, 100_000.0, 78_000.0), equity=78_000.0)
         bars = [r for r in _records(run.root) if r["type"] == "bar"]
         # an earlier resume at forward bar 5: an epoch that is not None in memory
         ep1 = {"bar": bars[4]["bar"], "equity": float(bars[4]["equity"]), "closed_trades_before": 0}
@@ -1541,6 +1543,171 @@ def test_heartbeat_clocks_tolerate_the_timers_jitter():
     assert len(calls) == 3
 
 # ────────────────────────────── runner ──────────────────────────────
+
+# ────────────────────────────── the sigma floor (§1.2 amendment, 2026-09-18) ──────────────────────────────
+
+def _often_flat_bars(n_up: int = 110, n_down: int = 215, seed: int = 7) -> pd.DataFrame:
+    """A rise, then a long decline: a long-only trend filter is invested for a
+    stretch of the rise and flat for nearly all of the rest."""
+    rng = np.random.default_rng(seed)
+    rets = np.concatenate([rng.normal(0.004, 0.006, n_up), rng.normal(-0.003, 0.006, n_down)])
+    close = 100 * np.exp(np.cumsum(rets))
+    idx = pd.bdate_range("2020-01-01", periods=len(close), name="date")
+    return pd.DataFrame({"open": close, "high": close * 1.002, "low": close * 0.998,
+                         "close": close, "volume": 1e5}, index=idx)
+
+
+def _floor_of(run: P.PaperRun) -> float:
+    return run.config["vol_target"] / np.sqrt(data.periods_per_year(run.bars().index))
+
+
+def test_r2_floor_applies_when_an_often_flat_seed_sits_below_it():
+    base = _fresh("r2-floor")
+    run = make_run(base, "flat", _declining(25, 100_000.0, 99_000.0), equity=99_000.0,
+                   strategy="trend_filter", bars=_often_flat_bars())
+    prof = risk.seed_profile(run)
+    seed, inv = prof["returns"], prof["invested_returns"]
+    assert len(inv) < len(seed) / 2, (len(inv), len(seed))       # flat most of the time
+    sigma_seed, floor = float(seed.std(ddof=1)), _floor_of(run)
+    assert 0 < sigma_seed < floor, (sigma_seed, floor)
+    r2 = risk.evaluate(run)["rules"]["r2_equity_band"]
+    i = r2["inputs"]
+    assert abs(i["sigma_seed"] - sigma_seed) < 1e-7 and abs(i["sigma_floor"] - floor) < 1e-7, i
+    assert i["sigma_source"] == "floor" and i["sigma_bar"] == i["sigma_floor"], i
+    assert abs(i["sigma_floor"] - 0.15 / np.sqrt(252.0)) < 1e-7, i     # a daily business calendar
+    assert r2["armed"] and abs(r2["threshold"] - (-risk.BAND_SIGMAS * floor * np.sqrt(25))) < 1e-6, r2
+    # the floor only ever widens the band
+    assert r2["threshold"] < -risk.BAND_SIGMAS * sigma_seed * np.sqrt(25)
+    # a loss between the two bands: a trip on the seed sigma, healthy on the floored one
+    n = 25
+    between = 100_000.0 * float(np.exp(-risk.BAND_SIGMAS * np.sqrt(n) * (sigma_seed + floor) / 2))
+    run = make_run(base, "between", _declining(n, 100_000.0, between), equity=between,
+                   strategy="trend_filter", bars=_often_flat_bars())
+    r2 = risk.evaluate(run)["rules"]["r2_equity_band"]
+    assert r2["armed"] and not r2["trip"], r2
+    assert r2["value"] < -risk.BAND_SIGMAS * sigma_seed * np.sqrt(n), r2       # the old band would have tripped
+    # and below the floored band it still trips
+    run = make_run(base, "below", _declining(n, 100_000.0, 85_000.0), equity=85_000.0,
+                   strategy="trend_filter", bars=_often_flat_bars())
+    assert risk.evaluate(run)["rules"]["r2_equity_band"]["trip"]
+
+
+def test_r2_floor_does_not_apply_when_the_seed_sigma_is_above_it():
+    base = _fresh("r2-nofloor")
+    run = make_run(base, "bh", _declining(25, 100_000.0, 99_000.0), equity=99_000.0)
+    seed = risk.seed_returns(run)
+    sigma_seed, floor = float(seed.std(ddof=1)), _floor_of(run)
+    assert sigma_seed > floor, (sigma_seed, floor)
+    r2 = risk.evaluate(run)["rules"]["r2_equity_band"]
+    i = r2["inputs"]
+    assert i["sigma_source"] == "seed" and i["sigma_bar"] == i["sigma_seed"], i
+    assert abs(i["sigma_bar"] - sigma_seed) < 1e-7 and abs(i["sigma_floor"] - floor) < 1e-7, i
+    assert abs(r2["threshold"] - (-risk.BAND_SIGMAS * sigma_seed * np.sqrt(25))) < 1e-6, r2
+
+
+def test_r2_no_floor_without_a_vol_target_and_the_floor_never_arms_the_rule():
+    base = _fresh("r2-nofloor-vt")
+    run = make_run(base, "novt", _declining(25, 100_000.0, 99_000.0), equity=99_000.0,
+                   strategy="trend_filter", bars=_often_flat_bars(), vol_target=None)
+    r2 = risk.evaluate(run)["rules"]["r2_equity_band"]
+    i = r2["inputs"]
+    assert i["sigma_floor"] is None and i["sigma_source"] == "seed", i
+    assert i["sigma_bar"] == i["sigma_seed"] and i["sigma_bar"] > 0 and r2["armed"], r2
+    assert risk.sigma_floor(None, run.bars()) is None
+    assert risk.sigma_floor(0.15, None) is None
+    # every R2 evaluation carries the three fields, armed or not
+    for name in ("sigma_seed", "sigma_floor", "sigma_source"):
+        assert name in i, name
+    # a disabled rule stays disabled: a floor exists, there is no seed sigma,
+    # and the floor does not stand in for it
+    run = make_run(base, "short", _declining(25, 100_000.0, 99_000.0), equity=99_000.0,
+                   n_seed=300, strategy="tsmom")
+    r2 = risk.evaluate(run)["rules"]["r2_equity_band"]
+    i = r2["inputs"]
+    assert not r2["armed"] and not r2["trip"] and r2["threshold"] is None, r2
+    assert i["sigma_bar"] is None and i["sigma_seed"] is None and i["sigma_source"] is None, i
+    assert i["sigma_floor"] is not None and "rule disabled" in r2["note"], r2
+    # a bare series through evaluate(seed=...) is floored the same way
+    run = make_run(base, "bare", _declining(25, 100_000.0, 99_000.0), equity=99_000.0)
+    tiny = pd.Series(np.random.default_rng(2).normal(0.0, 0.001, 200))
+    i = risk.evaluate(run, seed=tiny)["rules"]["r2_equity_band"]["inputs"]
+    assert i["sigma_source"] == "floor" and i["sigma_bar"] == i["sigma_floor"] > i["sigma_seed"], i
+
+
+def test_false_trip_rate_takes_the_band_sigma_and_other_multiples():
+    rng = np.random.default_rng(0)
+    r = pd.Series(rng.normal(0.0, 0.01, 400))
+    own = risk.false_trip_rate(r, paths=300)
+    # the default sigma is the sd of the returns passed in
+    assert risk.false_trip_rate(r, paths=300, sigma=float(r.std(ddof=1))) == own
+    assert risk.false_trip_rate(r, paths=300, sigmas=risk.BAND_SIGMAS) == own
+    # a wider sigma (the floor) is crossed less often; so is a wider multiple
+    floored = risk.false_trip_rate(r, paths=300, sigma=0.016)
+    assert floored < own, (floored, own)
+    two = risk.false_trip_rate(r, paths=300, sigma=0.012, sigmas=2.0)
+    three = risk.false_trip_rate(r, paths=300, sigma=0.012, sigmas=3.0)
+    assert three < two, (three, two)
+    assert three == risk.false_trip_rate(r, paths=300, sigma=0.012, sigmas=3.0)   # deterministic
+    assert risk.BAND_SIGMAS == 3.0                       # a report multiple, not the rule's
+    # an explicit sigma makes a flat series computable (it never crosses); a bad one does not
+    assert risk.false_trip_rate(pd.Series([0.0] * 50), sigma=0.01, paths=50) == 0.0
+    assert risk.false_trip_rate(r, sigma=0.0) is None
+    assert risk.false_trip_rate(r, sigma=float("nan")) is None
+
+
+def test_invested_only_returns_exclude_the_flat_bars():
+    base = _fresh("r2-invested")
+    run = make_run(base, "flat", _declining(25, 100_000.0, 99_000.0), equity=99_000.0,
+                   strategy="trend_filter", bars=_often_flat_bars())
+    prof = risk.seed_profile(run)
+    seed, inv = prof["returns"], prof["invested_returns"]
+    res = _engine_returns(run)
+    pos = res.position.fillna(0.0)
+    expected = seed[pos.loc[seed.index] != 0]
+    assert inv.equals(expected) and 0 < len(inv) < len(seed), (len(inv), len(seed))
+    assert (pos.loc[inv.index] != 0).all()
+    assert (pos.loc[seed.index.difference(inv.index)] == 0).all()
+    # sitting out dilutes the marginal sd: the invested-only sd is the larger one
+    assert float(inv.std(ddof=1)) > float(seed.std(ddof=1)) * 1.3
+    # always invested: the two series are the same
+    run = make_run(base, "bh", _declining(25, 100_000.0, 99_000.0), equity=99_000.0)
+    prof = risk.seed_profile(run)
+    assert prof["invested_returns"].equals(prof["returns"])
+    # a disabled profile carries an empty one
+    run = make_run(base, "short", _declining(25, 100_000.0, 99_000.0), equity=99_000.0,
+                   n_seed=300, strategy="tsmom")
+    prof = risk.seed_profile(run)
+    assert prof["returns"].empty and prof["invested_returns"].empty
+
+
+def test_cmd_risk_prints_the_floor_and_both_false_trip_rates_and_writes_nothing():
+    import argparse
+    import contextlib
+    import hashlib
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("paper_cli", os.path.join(ROOT, "paper.py"))
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    base = _fresh("r2-cli")
+    make_run(base, "flat", _declining(25, 100_000.0, 99_000.0), equity=99_000.0,
+             strategy="trend_filter", bars=_often_flat_bars())
+    make_run(base, "novt", _declining(25, 100_000.0, 99_000.0), equity=99_000.0, vol_target=None)
+
+    def digest() -> dict:
+        return {str(p.relative_to(base)): hashlib.md5(p.read_bytes()).hexdigest()
+                for p in sorted(base.rglob("*")) if p.is_file()}
+
+    before = digest()
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = cli.cmd_risk(argparse.Namespace(dir=str(base), id=None, all=True))
+    text = buf.getvalue()
+    assert rc == 0 and digest() == before                      # read-only
+    assert "floor 0.009449 (vol_target / sqrt(ppy))" in text and "(floor)" in text, text
+    assert "no floor (vol_target is None)" in text, text
+    assert "seed returns," in text and "invested-only" in text, text
+    assert "sigma_source=floor" in text and "sigma_source=seed" in text, text
+
 
 def _main() -> int:
     tests = [(k, v) for k, v in globals().items() if k.startswith("test_") and callable(v)]

@@ -8,6 +8,7 @@ recent `resume`):
     R1  profit factor over the last 60 closed round trips        trips  < 1.0
     R2  ln(E / E_0) against a zero-drift band of the backtest's
         per-bar sigma:  -2 * sigma_bar * sqrt(n)                 trips  below it
+        (sigma_bar = max(seed sd, vol_target / sqrt(ppy)) — the 2026-09-18 floor)
     R3  annualised sd of the epoch's per-bar equity returns       trips  > 2 x vol_target
 
 A rule is *armed* only once it has enough data to mean anything (60 trades, 20
@@ -38,7 +39,9 @@ UNHALT = "human — paper.py resume"
 PF_WINDOW = 60            # R1: closed round trips
 PF_MIN = 1.0              # R1 trips below this
 ARM_BARS = 20             # R2 and R3 arm at this many epoch bars
-BAND_SIGMAS = 2.0         # R2: the band is -BAND_SIGMAS * sigma_bar * sqrt(n)
+BAND_SIGMAS = 3.0         # R2: the band is -BAND_SIGMAS * sigma_bar * sqrt(n). 3.0 since
+                          # 2026-09-18: at 2.0 a healthy invested run crossed it by chance
+                          # 15-39 % of the time over 250 bars (DESIGN-risk.md 1.2, 7)
 VOL_MULT = 2.0            # R3 trips above VOL_MULT * vol_target
 
 RULES = ("r1_profit_factor", "r2_equity_band", "r3_realised_vol")
@@ -132,8 +135,8 @@ MIN_SEED_BARS = ARM_BARS      # R2 needs at least max(vol_lookback, this) seed r
 
 
 def _empty_profile(note: str, **extra) -> dict:
-    return {"returns": pd.Series(dtype=float), "seed_bars": 0, "vol_lookback": None,
-            "first_position_bar": None, "warmup_bars": 0, "min_bars": None,
+    return {"returns": pd.Series(dtype=float), "invested_returns": pd.Series(dtype=float),
+            "seed_bars": 0, "vol_lookback": None, "first_position_bar": None, "warmup_bars": 0, "min_bars": None,
             "note": note, **extra}
 
 
@@ -148,6 +151,12 @@ def seed_profile(run, bars: pd.DataFrame | None = None) -> dict:
     strategy is genuinely flat AFTER it has started are kept: the band counts
     every epoch bar, flat or not, so the marginal per-bar sd is the one that
     matches it (recorded as a deviation, see DESIGN-risk.md §8).
+
+    `invested_returns` are the same returns (same start) on the bars where the
+    engine's held position is non-zero: what the run's noise looks like while
+    it is holding something, which is what `paper.py risk` quotes its second
+    false-trip rate on (§1.2 amendment). Reporting only — sigma_seed is the sd
+    of `returns`, flat bars included, as before.
 
     Returns the series plus what was dropped, so R2's inputs can say so. The
     `returns` are empty, with `note` saying why, when there is nothing to
@@ -183,11 +192,13 @@ def seed_profile(run, bars: pd.DataFrame | None = None) -> dict:
                               seed_bars=int(len(seed)), vol_lookback=lookback, min_bars=min_bars)
     start_i = max(lookback, first)
     returns = res.returns.iloc[start_i:].astype(float)
-    out = {"returns": returns, "seed_bars": int(len(seed)), "vol_lookback": lookback,
+    invested_returns = returns[pos[start_i:] != 0]
+    out = {"returns": returns, "invested_returns": invested_returns, "seed_bars": int(len(seed)), "vol_lookback": lookback,
            "first_position_bar": str(seed.index[first]),
            "warmup_bars": int(max(0, first - lookback)), "min_bars": min_bars, "note": None}
     if len(returns) < min_bars:
         out["returns"] = pd.Series(dtype=float)
+        out["invested_returns"] = pd.Series(dtype=float)
         out["note"] = (f"only {len(returns)} seed bars after the strategy's warmup "
                        f"(first position at bar {first} of {len(seed)}), need {min_bars} — "
                        "rule disabled")
@@ -199,28 +210,57 @@ def seed_returns(run, bars: pd.DataFrame | None = None) -> pd.Series:
     return seed_profile(run, bars)["returns"]
 
 
+def sigma_floor(vol_target, store: pd.DataFrame | None) -> float | None:
+    """The §1.2 amendment's floor: vol_target / sqrt(ppy), the per-bar sigma of
+    a run that is invested and on target. `ppy` is `data.periods_per_year` of
+    the run's whole bar store — the figure `engine.vol_scale` sizes to
+    vol_target with, and the one R3 annualises with. None when there is no
+    vol_target (no floor) or no store to read a calendar from."""
+    if vol_target is None or store is None or len(store) < 3:
+        return None
+    ppy = float(data_mod.periods_per_year(store.index))
+    target = float(vol_target)
+    if not (ppy > 0 and target > 0):
+        return None
+    return target / math.sqrt(ppy)
+
+
 def false_trip_rate(seed_returns: pd.Series | np.ndarray, block: int = 10,
                     horizon: int = 250, paths: int = 1000, seed: int = 0,
-                    sigmas: float = BAND_SIGMAS) -> float | None:
+                    sigmas: float = BAND_SIGMAS,
+                    sigma: float | None = None,
+                    arm_bars: int = ARM_BARS) -> float | None:
     """How often R2's band is crossed by paths that are only the seed's own
     noise: the fraction of `paths` stationary-block-bootstrap resamples of the
     seed returns (mean block length `block`, `horizon` bars) whose cumulative
-    log return dips below -sigmas * sigma * sqrt(n) at any n <= horizon.
+    log return dips below -sigmas * sigma * sqrt(n) at any n from `arm_bars` to
+    `horizon` — the rule cannot trip before it is armed, so a crossing before
+    that is not a trip and is not counted.
 
-    A 2-sigma band checked at every n is crossed far more often than the
-    one-shot 2.3 %; this is the number that says how much more, for this run.
+    `sigma` is the band's per-bar sigma — pass the one R2 actually uses (the
+    floored sigma_bar) so the rate is the rate of that band; it defaults to
+    the sd of the returns passed in. The resampling does not depend on it: the
+    same `seed` draws the same paths whatever band they are held against.
+
+    A k-sigma band checked at every n is crossed far more often than the
+    one-shot tail probability; this is the number that says how much more, for
+    this run.
     Deterministic: a numpy Generator seeded with `seed`."""
     r = np.asarray(seed_returns, dtype=float)
     r = r[np.isfinite(r)]
     if len(r) < 2:
         return None
-    sigma = float(r.std(ddof=1))
-    if not sigma > 0:
+    if sigma is None:
+        sigma = float(r.std(ddof=1))
+    sigma = float(sigma)
+    if not (math.isfinite(sigma) and sigma > 0):
         return None
     rng = np.random.default_rng(seed)
     n = len(r)
     log_r = np.log1p(r)
-    band = -sigmas * sigma * np.sqrt(np.arange(1, horizon + 1))
+    steps = np.arange(1, horizon + 1)
+    band = -sigmas * sigma * np.sqrt(steps)
+    live = steps >= max(1, int(arm_bars))
     tripped = 0
     for _ in range(paths):
         idx = np.empty(horizon, dtype=int)
@@ -232,7 +272,7 @@ def false_trip_rate(seed_returns: pd.Series | np.ndarray, block: int = 10,
             idx[filled:filled + take] = (start + np.arange(take)) % n
             filled += take
         cum = np.cumsum(log_r[idx])
-        if bool((cum < band).any()):
+        if bool(((cum < band) & live).any()):
             tripped += 1
     return tripped / paths
 
@@ -274,12 +314,22 @@ def _r1_profit_factor(run, ep: dict) -> dict:
     }
 
 
-def _r2_equity_band(run, ep: dict, bars: list[dict], profile: dict) -> dict:
+def _r2_equity_band(run, ep: dict, bars: list[dict], profile: dict,
+                    store: pd.DataFrame | None = None) -> dict:
     seed = profile["returns"]
     n = len(bars)
     e0 = float(ep.get("equity") or 0.0)
     e = float(run.state.get("equity") or 0.0)
-    sigma = float(seed.std(ddof=1)) if len(seed) > 1 else None
+    sigma_seed = float(seed.std(ddof=1)) if len(seed) > 1 else None
+    floor = sigma_floor(run.config.get("vol_target"), store)
+    # §1.2 amendment: sigma_bar = max(sigma_seed, vol_target / sqrt(ppy)). The
+    # floor widens a band that exists; with no usable seed sigma the rule stays
+    # disabled exactly as before — the floor never arms it on its own.
+    sigma, source = sigma_seed, None
+    if sigma_seed is not None and sigma_seed > 0:
+        source = "seed"
+        if floor is not None and floor > sigma_seed:
+            sigma, source = floor, "floor"
     value = math.log(e / e0) if e > 0 and e0 > 0 else None
     note = profile.get("note")
     if sigma is None:
@@ -293,7 +343,9 @@ def _r2_equity_band(run, ep: dict, bars: list[dict], profile: dict) -> dict:
         "trip": bool(armed and value is not None and threshold is not None
                      and value < threshold),
         "inputs": {
-            "sigma_bar": _f(sigma), "sigmas": BAND_SIGMAS, "n": n,
+            "sigma_bar": _f(sigma), "sigma_seed": _f(sigma_seed),
+            "sigma_floor": _f(floor), "sigma_source": source,
+            "sigmas": BAND_SIGMAS, "n": n,
             "arm_bars": ARM_BARS, "E_0": _f(e0), "E": _f(e),
             "seed_bars": int(len(seed)), "seed_history_bars": profile.get("seed_bars"),
             "warmup_bars": profile.get("warmup_bars"),
@@ -364,7 +416,7 @@ def evaluate(run, now: str | None = None, seed: pd.Series | dict | None = None) 
                    "first_position_bar": None, "min_bars": None, "note": None}
     rules = {
         "r1_profit_factor": _r1_profit_factor(run, ep),
-        "r2_equity_band": _r2_equity_band(run, ep, bars, profile),
+        "r2_equity_band": _r2_equity_band(run, ep, bars, profile, store),
         "r3_realised_vol": _r3_realised_vol(run, ep, bars, store),
     }
     tripped = next((name for name in RULES if rules[name]["trip"]), None)

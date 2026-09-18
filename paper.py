@@ -252,6 +252,10 @@ def cmd_risk(args) -> int:
     return 0
 
 
+def _sig(value) -> str:
+    return "-" if value is None else f"{value:.6f}"
+
+
 def _risk_one(args, risk, run_id: str) -> None:
     run = paper.PaperRun.load(args.dir, run_id)
     print(f"\n  {run_id}  {run.config['strategy']}  "
@@ -268,15 +272,36 @@ def _risk_one(args, risk, run_id: str) -> None:
     seed = profile["returns"]
     ev = risk.evaluate(run, seed=profile)
     print(risk.describe(ev))
-    rate = risk.false_trip_rate(seed)
+    r2in = ev["rules"]["r2_equity_band"]["inputs"]
+    used, s_seed, s_floor = r2in.get("sigma_bar"), r2in.get("sigma_seed"), r2in.get("sigma_floor")
+    if s_floor is None:
+        why = ("vol_target is None" if run.config.get("vol_target") is None
+               else "no bar-store calendar")
+        print(f"  R2 sigma: seed {_sig(s_seed)}, no floor ({why}) — band uses {_sig(used)}")
+    else:
+        print(f"  R2 sigma: seed {_sig(s_seed)}, floor {_sig(s_floor)} (vol_target / sqrt(ppy)) — "
+              f"band uses {_sig(used)} ({r2in.get('sigma_source') or 'rule disabled'})")
+    invested = profile.get("invested_returns")
+    invested = seed.iloc[0:0] if invested is None else invested
+    rate = risk.false_trip_rate(seed, sigma=used) if used else None
+    rate_inv = risk.false_trip_rate(invested, sigma=used) if used else None
     if rate is None:
         print(f"  R2 false-trip rate: not computable ({profile.get('note') or 'no seed returns'})")
     else:
-        print(f"  R2 false-trip rate: {rate:.1%} of 1000 stationary-block-bootstrap paths "
-              f"of the {len(seed)} seed returns (block 10, 250 bars) cross the band"
-              f" — seed returns start at the strategy's first position "
-              f"({profile.get('first_position_bar')}; {profile.get('warmup_bars')} warmup "
-              f"bar(s) after the vol lookback dropped)")
+        inv = "not computable" if rate_inv is None else f"{rate_inv:.1%}"
+        print(f"  R2 false-trip rate of the band used ({r2in.get('sigmas')} x {_sig(used)}): "
+              f"{rate:.1%} on all {len(seed)} seed returns, {inv} on the {len(invested)} "
+              f"invested-only — of 1000 stationary-block-bootstrap paths (block 10, 250 bars); "
+              f"seed starts at the first position ({profile.get('first_position_bar')}; "
+              f"{profile.get('warmup_bars')} warmup bar(s) dropped)")
+        if rate_inv is not None and rate_inv > 0.10:
+            # §1.2 amendment: above about 10 % the band needs widening, not only
+            # flooring — BAND_SIGMAS is the user's decision; these are its numbers
+            wider = ", ".join(
+                f"{m} sigma {risk.false_trip_rate(invested, sigma=used, sigmas=m):.1%}"
+                for m in (risk.BAND_SIGMAS + 0.5, risk.BAND_SIGMAS + 1.0))
+            print(f"  invested-only rate is above 10% — same sigma, wider band: {wider} "
+                  f"(report only; BAND_SIGMAS stays {risk.BAND_SIGMAS})")
     last = run.state.get("risk")
     if last is not None:
         if last.get("error"):
