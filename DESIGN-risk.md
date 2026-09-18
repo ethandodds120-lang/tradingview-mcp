@@ -54,6 +54,30 @@ Why arming thresholds: a volatility estimate on fewer than 20 bars is noise,
 and the ticket's 60-trade window is its own threshold. Each is a deviation
 from a literal reading of the ticket and is recorded in §8.
 
+**Amendment, 2026-09-18, the user's decision on §8's open question — σ_bar is
+floored at what the sizing itself aims for.**
+
+```
+σ_bar = max( σ_seed , vol_target / √ppy )
+```
+
+`σ_seed` is the seed standard deviation as defined above; `ppy` is
+`data.periods_per_year` of the run's bar store, the figure `vol_scale` sizes
+the run to `vol_target` with, so the floor is the per-bar σ of a run that is
+invested and on target. No floor when `vol_target` is `None`. R2 stays
+disabled where §8 says it is (no usable seed σ); the floor does not arm it on
+its own. R2's inputs record `sigma_seed`, `sigma_floor` and which one the band
+used. Reason, in the user's words: a kill rule that trips on healthy behaviour
+is worse than none — a long-only filter that sat out much of its seed has a
+seed σ well under what it runs at while invested (SOL: 0.0048 against 0.0078),
+and a 2σ band built on it is nearer 1σ in the stretches that matter. The floor
+cannot tighten any band. `paper.py risk` prints the false-trip rate of the band
+actually used, twice: on every seed return, as before, and on the
+**invested-only** seed returns, which is the honest figure for a run that is
+holding a position. If that figure is above about 10 % over 250 bars the band
+needs widening, not only flooring — `BAND_SIGMAS` is then the user's next
+decision, with the numbers in §7.
+
 ### 1.3 What a trip does
 
 1. Writes `HALTED` in the run directory: `{"at", "rule", "value",
@@ -250,8 +274,9 @@ quantlab-heartbeat.timer`, run `paper.py alert --test` and `paper.py risk
 Written back by the build and its reviews. None changes a number a run
 journals when no rule trips.
 
-**One decision for the user before install — R2's σ on a strategy that is
-often flat.** As built, σ_bar is the standard deviation of every seed return
+**Decided 2026-09-18: option (b), the floor — applied; see the amendment under
+§1.2 and the numbers in §7.** The question as it stood: R2's σ on a strategy
+that is often flat. As first built, σ_bar is the standard deviation of every seed return
 after the strategy's first position, flat bars included. A long-only filter
 that sits out for much of its seed therefore gets a σ well below what it
 runs at while invested, and its 2σ band is closer to 1σ in the stretches

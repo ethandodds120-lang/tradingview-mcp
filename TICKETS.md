@@ -13,8 +13,9 @@ deleting it when the commit that fixes it lands. Order matters and is stated.
 2. **T-7 indicator + human-exit experiment** — build only after T-1 and T-4
    are live; its Part 1 (trailing benchmark) and Part 2 (wide funnel) are
    done (2026-09-12, `DESIGN-tjr-human.md` §1 and §2.2); the three
-   definitions are decided (§2.3) and §5 is amended (stop choice at fill,
-   ten-rule benchmark, `n_trials` 10, underwater-exit statistic)
+   definitions are decided (§2.3, corrected in §2.5) and §5 is amended (stop
+   choice at fill, ten-rule benchmark, `n_trials` 14, underwater-exit
+   statistic, interim reviews at 25 and 50)
 3. **T-3 bootstrap ignores the rebalance band** — before any batch of new
    routed runs
 4. **T-2 incubation gate** (carried; not re-confirmed in the latest ordering)

@@ -403,6 +403,39 @@ script's `as_of()` did not forget the fresh-inversion bookkeeping when it
 forgot the sweep; the truncated run was the correct side and no printed
 field or count depends on it.
 
+### 2.5 Decisions on §2.4 (2026-09-18) — the final spec, and one last re-run
+
+Three corrections by the user to §2.3, made on funnel counts only; still no
+outcome measured. They are the spec `tjr_human` is built to. The re-run under
+them is §2.6 (`--mode final`; `--mode decided` and `--mode literal` still
+reproduce §2.4 and §2.1 byte for byte).
+
+1. **`eq`: the open-side test, in addition to §2.3's excursion rule.** §2.3's
+   0.5 ATR excursion is inert (§2.4) and `eq` still carried 39 of 42 and 33
+   of 40 fills. A touch of the `eq` zone now counts only on a bar that **opens
+   on the far side of the midpoint** — long: open > EQ; short: open < EQ. A
+   bar that opens at or through the midpoint is not a retrace into it and
+   does not fill; a later bar that opens on the far side and trades back to
+   the midpoint does. While `eq` is the freshest zone it is the zone in play:
+   a bar refused by the open-side test does not fall through to an older zone
+   on that bar. On 1-minute entries the test is applied to the 1-minute bar
+   that touches.
+2. **Level classes: round 1's six session levels are ONE class.** `SESSION` =
+   ASIA_H/L, LON_H/L, PDH/PDL; `H1` = H1_SH/SL; `H4` = H4_SH/SL. §2.3's
+   wording split round 1's own rule by accident: a wick through a session low
+   and a session high is round 1's ambiguity again (the `SESSION` class
+   abstains). The combination rule of §2.3 is otherwise unchanged — among the
+   classes that return a sweep, one side → sweep, opposite sides → ambiguous —
+   and the re-run reports how many sweeps come from bars on which `SESSION`
+   abstained and a swing class returned.
+3. **Targets: the nearest opposing-NAMED level, or a POC / HVN, beyond the
+   entry.** For a long: the nearest of ASIA_H, LON_H, PDH, H1_SH, H4_SH,
+   POC_PREV, HVN_* **above** the entry is T1, the next one beyond it T2;
+   shorts mirror with the lows. A same-side-named level is never a target —
+   targeting the level the sweep just took is wrong by construction. Levels at
+   the same price are one target carrying both names. No such level beyond
+   the entry → no T1 for that trade, counted and reported.
+
 ## 3. Part 3 — `tjr_human` (T-7)
 
 ### 3.1 Signal layer
@@ -412,18 +445,18 @@ field or count depends on it.
   entry confirmation (the two-timeframe model of `DESIGN-tjr-intraday.md`
   §11.3).
 - Sweep: wick through a §2.3 sweep level (the directional set; ambiguity
-  judged within a level class), close back inside.
+  judged within a level class — the three classes of §2.5), close back inside.
 - Confirmation: any of the three §2 confirmations, on 1-minute bars, after
   the sweep; `ifvg` on a fresh inversion only (§2.3).
 - Zone: any of the four §2 zones, in discount / premium of the dealing range;
-  `eq` only as a retrace into it (§2.3).
+  `eq` only as a retrace into it (§2.3's excursion and §2.5's open-side test).
 - Entry: price returns to the zone **and** a 1-minute candle closes out of
   the zone in the trade direction. Enter at the next bar's open.
 - Initial stop: **the human's choice at fill, within [wick, 2.0 ATR]** (§3.3
   `STOP`, §5 amendment); the wick stop (round 1's definition) is the default
   when no choice arrives in time.
-- Targets: next opposing key level of any §2 type, POC and HVN included (T1),
-  then the one beyond it (T2).
+- Targets: the nearest opposing-named level, or POC / HVN, beyond the entry
+  (T1), then the one beyond it (T2) — §2.5.
 - The bot takes every paper entry itself. The human does not pick entries.
 
 ### 3.2 Chart output
@@ -474,6 +507,30 @@ in R against its own initial risk.
 - branches: R by level type, confirmation type, zone type; `eq` fills by
   co-occurring zone type
 - trades to go; current trajectory against the §5 bar
+
+### 3.7 Interim reviews at 25 and 50 filled trades (added 2026-09-18)
+
+At 100 trades a year is most of what it takes (§2.6), so the trajectory is
+shown twice on the way, **without touching the pre-registration**. At the
+25th and the 50th filled trade the box writes one review, from the journal,
+against the same benchmarks as the final test:
+
+- human R per trade, and each of the ten mechanical exits' R per trade on
+  the same entries; which exit is best so far
+- the paired difference against the best-of-ten so far: mean, standard
+  error, and the count of trades the human beat it on
+- the behaviour statistics of §3.6, including exits while underwater before
+  any rule would have exited, and the stop width chosen
+- branches (level, confirmation, zone), skipped signals and what they did
+
+What an interim review is not: it computes no deflated statistic and
+declares nothing; it cannot stop the experiment early, extend it, change the
+sample, the benchmark set, the count of fourteen or the 0.95 bar; and the
+best-of-ten named at 25 or 50 binds nothing — the scored benchmark is chosen
+on all 100 entries. The one effect it can have is on the human, who will
+have seen it; that is part of what is being measured, and each review is
+journaled with its timestamp so the trades before and after it can be told
+apart.
 
 ## 4. Part 4 — POC / HVN standalone (T-8)
 
@@ -535,6 +592,21 @@ the trades that point to an edge. So:
 - Ten is the count as instructed (one more choice). A stricter count would
   also add the four new fixed-stop comparators, fourteen. If that is the
   count wanted, it is said before trade one; after, it is fixed.
+
+**Second amendment, 2026-09-18, before trade one — supersedes the count
+above.**
+
+- **`n_trials` = 14.** The ten mechanical exits of the benchmark set (the
+  wick fixed stop, the five §1 trailing rules, the four round-2 fixed
+  widths) plus the four human controls (`SKIP`, `STOP`, `MOVE STOP`,
+  `EXIT NOW`). Pass: `d_i = R_human,i − R_best_of_ten,i` over the 100 trades
+  through `validate.deflated_sharpe` with `n_trials = 14`, ≥ 0.95,
+  `mean(d) > 0`.
+- **The sample stays 100.** About 180 sessions of both instruments at §2.6's
+  rate; not shrunk because it is long.
+- **Interim reviews at 25 and 50 filled trades** (§3.7): descriptive, against
+  the same ten benchmarks, journaled; they decide nothing and change
+  nothing here.
 
 ## 6. What "beating the rule" would and would not show
 
