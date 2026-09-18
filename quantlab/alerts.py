@@ -45,7 +45,10 @@ DEADLINE_S = 20.0         # per notify, every attempt included — the tick's "n
 RETRY_MIN_S = 1.0         # no retry with less than this left of the deadline
 
 #: the kinds that leave the box (§4: exactly three events, plus the test)
-PUSH_KINDS = frozenset({"fill", "stale", "halt", "test"})
+PUSH_KINDS = frozenset({"fill", "stale", "halt", "test",
+                        # quantlab.tjr_human (DESIGN-tjr-human.md section 9.3): the signal, the trade
+                        # (fill, stop set, exit) and the bot's answer to a command. T-4's are untouched.
+                        "signal", "trade", "reply"})
 
 
 def _now() -> str:

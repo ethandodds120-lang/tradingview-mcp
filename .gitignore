@@ -23,3 +23,6 @@ paper_runs/
 env/
 # research data pulled from vendor APIs, not source
 QQQ_1h.csv
+
+# tjr_human experiment: journals, 1-minute store, chart and alert logs (DESIGN-tjr-human.md 9.4)
+tjr_human_runs/
