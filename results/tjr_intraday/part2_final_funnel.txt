@@ -1,0 +1,495 @@
+TJR wide funnel, FINAL (DESIGN-tjr-human.md section 2.5: eq only on a bar that opens on the far side of EQ; level classes SESSION / H1 / H4; targets = nearest opposing-named level or POC/HVN beyond the entry; the zone in play on a bar is read from the zones known before it). Funnel only: no stop simulated, no target tested, no exit, Sharpe, gate or verdict.
+params: poc_bin_ticks=4 (bin $1.00)  hvn_frac=0.5  hvn_max=6  composite=20 sessions  swings left/right=2/2  ote=0.79  eq excursion=0.5 x ATR(14)  wick stop buffer=0.25 x ATR(14) (geometry only)
+
+=== NQ  data/NQ_5min_tv.csv  41067 bars  2026-02-15 23:00:00 .. 2026-09-11 20:55:00 UTC ===
+
+1. levels at 09:25
+   sessions with a sweep-window bar: 149   (with a bar stamped exactly 09:30: 149)
+   present: ASIA_H:149  ASIA_L:149  LON_H:149  LON_L:149  PDH:148  PDL:148  H1_SH:142  H1_SL:147  H4_SH:134  H4_SL:146  POC_PREV:148  HVN(any):148
+   HVN count per day: 0:1  1:0  2:0  3:0  4:0  5:0  6:148
+   composite depth per day (sessions in the profile): 20:129  19:1  18:1  17:1  16:1  15:1  14:1  13:1  12:1  11:1  10:1  9:1  8:1  7:1  6:1  5:1  4:1  3:1  2:1  1:1  0:1
+   POC_PREV absent on: ['2026-02-16']   (first session in the file has no previous session)
+
+2. funnel (section 2.5: fresh ifvg; eq as a retrace AND only on a bar that opens on the far side of EQ; per-class sweep with SESSION / H1 / H4)
+   sessions 149 -> sweeps 112 -> confirmations 88 -> zones in discount/premium 88 -> fills 32
+   zones excluding eq: 52
+   sweep-window bars skipped as ambiguous (two classes returned opposite sides): 0 bars on 0 days
+   sweep-window bars on which a class abstained and no class returned (not a sweep, not ambiguous): 56 bars on 39 days
+   sweep days with no admissible opposing 5-minute swing (bos/ote cannot fire): 0
+   sweep days whose pre-sweep swing sits on the wrong side of the sweep extreme (degenerate leg): 5
+   sweeps by side: long 57  short 55
+   cross-check, literal code with round 1's six levels only: sweeps 93; sweep day, bar, side and level identical to tjr_intraday.day_log: yes
+   round-1 six-level sweep days lost under the final rule: 0 (by class disagreement: 0; abstention-only: 0; other: 0); days swept only under the final rule: 19; swept under both: 93 (same side 87, same bar 80, same level 68)
+   decided (five-class) sweep days lost under the final rule: 5; gained: 1; both: 111 (same side 108, same bar 107, same level 105)
+   ifvg on the confirmation bar: 56 (fresh inversions by definition)
+   sweep bar: 09:30:64  09:35:27  09:40:15  09:45:6
+   confirmation bar: 09:35:29  09:40:16  09:45:14  09:50:8  09:55:10  10:00:8  10:05:3
+
+3. breakdowns
+   sweeps by level class, every breached level of the sweep side counted:  SESSION:198  H1:93  H4:62   (levels per sweep bar: 3.15)   by type: ASIA:75  LON:74  PD:49  H1:93  H4:62
+   sweeps by level class, the setup's level (deepest among the returning classes): SESSION:68  H1:15  H4:29   by type: ASIA:23  LON:32  PD:13  H1:15  H4:29
+     by name, every breached:  H1_SL:48  H1_SH:45  ASIA_H:40  LON_L:39  ASIA_L:35  LON_H:35  H4_SL:32  H4_SH:30  PDL:27  PDH:22
+     by name, the setup's:     LON_H:18  H4_SL:16  LON_L:14  H4_SH:13  ASIA_L:12  ASIA_H:11  H1_SH:8  PDL:8  H1_SL:7  PDH:5
+   opposite-side levels the sweep wick also took (abstaining classes, or a high run without a close back): 94 on 60 sweep bars   H1_SH:28  H1_SL:25  H4_SH:13  ASIA_H:6  H4_SL:6  PDH:5  LON_H:4  PDL:3  ASIA_L:2  LON_L:2
+   sweep bars where a deeper level of the sweep side sat in an abstaining class (recorded, not the setup's): 16
+   sweep days where NO session level of the sweep side was breached (H1/H4 alone on that side): 12
+   confirmations by type, on the confirmation bar:  bos:48  ifvg:56  ote:64   combos: bos+ote:25  ifvg:24  bos+ifvg+ote:23  ifvg+ote:9  ote:7
+   confirmations by type, any bar by 10:05:        bos:63  ifvg:72  ote:71
+   confirmations, first-to-fire ONLY that type:    bos:0  ifvg:24  ote:7
+   zones by type, any qualifying (in discount/premium, eq once usable): fvg:13  eq:88  ob:39  breaker:15
+   zones by type, the one used (freshest at the end or at the fill): fvg:11  eq:76  ob:0  breaker:1
+   confirmed days with no zone at all (no leg gap, no ob/breaker in discount, no eq excursion): 0
+   fills by zone used: fvg:2  eq:29  ob:0  breaker:1   by side: long:18  short:14   by fill bar: 09:50:14  09:55:8  10:00:6  10:05:4
+   fills by (level class, level type, confirmation types, zone used):
+     H4       H4    ifvg          eq       6
+     SESSION  ASIA  bos+ifvg+ote  eq       3
+     SESSION  LON   bos+ifvg+ote  eq       3
+     SESSION  LON   bos+ote       eq       3
+     SESSION  ASIA  ifvg+ote      eq       2
+     H1       H1    bos+ifvg+ote  eq       1
+     H1       H1    bos+ote       breaker  1
+     H1       H1    ifvg          eq       1
+     H1       H1    ifvg          fvg      1
+     H1       H1    ote           eq       1
+     H4       H4    bos+ifvg+ote  eq       1
+     H4       H4    bos+ote       eq       1
+     H4       H4    bos+ote       fvg      1
+     SESSION  ASIA  bos+ote       eq       1
+     SESSION  ASIA  ifvg          eq       1
+     SESSION  ASIA  ote           eq       1
+     SESSION  LON   ifvg          eq       1
+     SESSION  LON   ifvg+ote      eq       1
+     SESSION  LON   ote           eq       1
+     SESSION  PD    bos+ifvg+ote  eq       1
+   fills, per day: 2026-02-19 S H1_SH bos+ote@09:35 breaker@09:50 24833.50 T1=HVN_1; 2026-02-23 S LON_H bos+ifvg+ote@09:40 eq@09:50 24954.50 T1=HVN_1; 2026-02-27 L PDL bos+ifvg+ote@09:35 eq@09:55 24857.00 T1=HVN_6; 2026-03-04 S LON_H bos+ote@09:40 eq@09:50 24905.50 T1=HVN_6; 2026-03-06 L H4_SL ifvg@10:00 eq@10:05 24715.38 T1=H1_SH; 2026-03-09 S H1_SH ifvg@09:35 eq@10:00 24458.75 T1=H1_SL; 2026-04-06 S ASIA_H ifvg+ote@10:00 eq@10:05 24309.75 T1=HVN_5; 2026-05-07 S ASIA_H ote@09:45 eq@09:50 28745.25 T1=LON_L+H1_SL; 2026-05-12 L H1_SL ote@09:35 eq@09:50 29188.75 T1=H1_SH; 2026-05-14 L LON_L bos+ifvg+ote@09:35 eq@09:55 29529.12 T1=PDH; 2026-05-15 L ASIA_L bos+ote@09:45 eq@09:55 29239.88 T1=HVN_1; 2026-05-18 S ASIA_H bos+ifvg+ote@09:40 eq@09:50 29230.88 T1=PDL+H4_SL; 2026-05-19 L ASIA_L bos+ifvg+ote@09:35 eq@09:55 28959.12 T1=POC_PREV; 2026-05-20 S H4_SH bos+ote@09:50 fvg@10:00 29107.50 T1=HVN_5; 2026-05-28 S LON_H bos+ifvg+ote@09:40 eq@09:50 29984.50 T1=H1_SL; 2026-06-01 L ASIA_L ifvg+ote@09:35 eq@09:50 30385.88 T1=POC_PREV; 2026-06-04 S H1_SH bos+ifvg+ote@09:40 eq@09:50 30292.38 T1=H1_SL; 2026-06-08 S LON_H bos+ote@09:35 eq@09:50 29490.75 T1=HVN_3; 2026-06-15 S H1_SH ifvg@09:55 fvg@10:05 30761.75 T1=HVN_5; 2026-06-16 L ASIA_L bos+ifvg+ote@09:45 eq@09:55 30817.12 T1=H1_SH; 2026-06-18 S H4_SH bos+ote@09:35 eq@09:50 30511.75 T1=POC_PREV; 2026-06-24 L LON_L ifvg+ote@09:50 eq@09:55 29738.25 T1=H4_SH; 2026-07-13 L ASIA_L ifvg@09:55 eq@10:00 29587.88 T1=HVN_5; 2026-07-21 S LON_H bos+ote@09:40 eq@10:00 29187.88 T1=LON_L; 2026-07-23 L H4_SL ifvg@09:35 eq@09:50 28737.25 T1=H1_SH; 2026-08-03 L LON_L ote@09:40 eq@09:50 28457.00 T1=HVN_1; 2026-08-10 L H4_SL ifvg@09:45 eq@09:50 29777.88 T1=HVN_3; 2026-08-11 L LON_L ifvg@09:55 eq@10:00 29728.25 T1=POC_PREV; 2026-08-27 L H4_SL bos+ifvg+ote@09:40 eq@09:55 29514.50 T1=HVN_1; 2026-08-28 L H4_SL ifvg@09:35 eq@10:00 29611.25 T1=HVN_2; 2026-09-01 L H4_SL ifvg@09:45 eq@09:55 29103.50 T1=H1_SH; 2026-09-10 L H4_SL ifvg@10:00 eq@10:05 29130.38 T1=HVN_1
+
+3b. eq zone (section 2.3 item 2 + section 2.5 item 1): usable after the 0.5 x ATR excursion, and a touch counts only on a bar that OPENS on the far side of EQ
+   excursion (unchanged): confirmed days 88: eq usable on 88 (at the confirmation bar 88, on a later bar 0); never by 10:05: 0
+   dealing range width at confirmation, in ATR: min 1.38  q1 2.52  median 3.04  q3 3.77  max 5.51  (n=88)
+   open-side test: bars refused (eligible entry-window bar, eq the freshest zone, open at or through EQ): 38 bars on 17 setups;  refused bars per setup: 1:9  2:1  3:1  4:6
+   refused bar stamps: 09:50:12  09:55:11  10:00:8  10:05:7   refused bars that opened exactly AT EQ: 0
+   what the refused setups then did: filled later on eq 3; filled on another zone that became freshest 2 (fvg:2); no fill 12
+     filled later on eq: 05-15 L refused 09:50 -> eq@09:55, 05-19 L refused 09:50 -> eq@09:55, 08-27 L refused 09:50 -> eq@09:55
+     filled on another zone: 05-20 S refused 09:55 -> fvg@10:00, 06-15 S refused 10:00 -> fvg@10:05
+     no fill: 02-16 L refused 09:55, 04-13 S refused 09:50/09:55/10:00/10:05, 05-26 S refused 09:50/09:55/10:00/10:05, 06-09 S refused 09:50/09:55, 06-22 S refused 09:50/09:55/10:00/10:05, 07-17 L refused 09:55, 08-12 S refused 09:50, 08-14 S refused 09:50/09:55/10:00/10:05, 08-17 S refused 09:50/09:55/10:00, 08-20 L refused 09:50/09:55/10:00/10:05, 08-31 L refused 09:50/09:55/10:00/10:05, 09-03 S refused 10:05
+   check: without the open-side test (same three classes, same zone-in-play rule) there are 44 fills, 43 on eq, 17 of them on a bar that opened at or through EQ; those are exactly the 17 refused setups, each first refused on the bar it would have filled: yes
+   eq fills: 29 of 32 fills; touching bar opened on the far side: 29 (all, by the rule); entry exactly at EQ: 29; fills on other zones: fvg:2  ob:0  breaker:1
+   co-occurrence at eq fills, other zone types in discount/premium at the fill bar: none:14  ob:13  breaker:2   by type: fvg:0  ob:13  breaker:2
+   zone-stage days whose only zone is eq: 36; fills on those days: 13
+
+3c. level classes (section 2.5 item 2): SESSION = ASIA_H/L + LON_H/L + PDH/PDL as ONE class; H1; H4. POC and HVN never swept
+   class-disagreement bars: 0 on 0 days; abstention-only bars: 56 on 39 days; decided (five classes) had 4 and 45 bars
+   disagreement patterns (class:side; abstaining classes noted): (none)
+   days whose FIRST sweep-window verdict was ambiguous but a later bar swept: 0; sweep days with an abstention-only bar before the sweep bar: 21
+   classes returning on the sweep bar, count per sweep: 1:83  2:23  3:6   by class: SESSION:80  H1:27  H4:40
+   classes abstaining on the sweep bar: SESSION:6  H1:41  H4:9   sweep bars with any abstention: 43
+   SESSION on the sweep bar: returned:80  abstained:6  breached_no_close_back:23  untouched:3  absent:0
+     returned = round 1's own test swept this bar; abstained = a session low AND a session high in the wick (round 1's
+     ambiguity: round 1 SKIPS the bar); breached_no_close_back / untouched = round 1 does NOT sweep the bar
+   final sweeps made by a swing class alone (SESSION did not return on the sweep bar): 32 of 112
+     SESSION abstained, a swing class returned (round 1 would have SKIPPED the bar): 6  -> round 1 had no sweep that day: 5; round 1 swept a LATER bar that day: 1 (same side 0); round 1 swept an EARLIER bar that final skipped as a class disagreement: 0 (of which that bar is a logged disagreement bar: 0)   returning class: H4:5  H1:1
+     SESSION returned nothing, a swing class returned (round 1 would NOT have swept the bar): 26  -> round 1 had no sweep that day: 14; round 1 swept a LATER bar that day: 12 (same side 7); round 1 swept an EARLIER bar that final skipped as a class disagreement: 0 (of which that bar is a logged disagreement bar: 0)   returning class: H4:15  H1:8  H1+H4:3
+   final sweeps on which SESSION returned: 80; round 1 swept the same bar: 80 (same side 80, same setup level 68; a deeper H1/H4 level of the same side is the setup's on 12); round 1 swept a different bar: 0
+   days only H1/H4 made (no round-1 sweep that day at all): 19 (03-06 L H4_SL[SESSION breached_no_close_back], 03-09 S H1_SH[SESSION abstained], 03-19 L H4_SL[SESSION breached_no_close_back], 03-23 L H4_SL[SESSION breached_no_close_back], 04-08 S H4_SH[SESSION abstained], 04-10 S H1_SH[SESSION breached_no_close_back], 04-13 S H4_SH[SESSION abstained], 04-28 L H1_SL[SESSION breached_no_close_back], 06-04 S H1_SH[SESSION breached_no_close_back], 06-15 S H1_SH[SESSION breached_no_close_back], 06-17 L H1_SL[SESSION untouched], 06-25 L H4_SL[SESSION abstained], 07-09 L H4_SL[SESSION breached_no_close_back], 07-14 L H4_SL[SESSION breached_no_close_back], 07-15 L H4_SL[SESSION breached_no_close_back], 07-30 L H1_SL[SESSION breached_no_close_back], 08-25 S H4_SH[SESSION breached_no_close_back], 08-27 L H4_SL[SESSION abstained], 09-10 L H4_SL[SESSION breached_no_close_back])
+   round-1 six-level sweep days lost: 0 of 93 (by class disagreement 0, abstention-only 0, other 0); decided lost 0
+   lost by class disagreement, per day: (none)
+   decided sweep days that are not final sweep days (the five-class split made them; SESSION as one class abstains): 5 (02-18, 03-02, 04-16, 06-10, 08-21)
+
+3d. targets, logged only (section 2.5 item 3): nearest opposing-NAMED level (long: ASIA_H LON_H PDH H1_SH H4_SH; short: the lows) or POC_PREV / HVN_*, strictly beyond the entry; T2 = the next distinct price
+   T1 by type over fills:  ASIA:0  LON:1  PD:1  H1:8  H4:1  POC:4  HVN:15  tie:2   no T1: 0   ties: LON_L+H1_SL:1  PDL+H4_SL:1
+   T1 by name:             HVN_1:6  H1_SH:5  HVN_5:4  POC_PREV:4  H1_SL:3  HVN_3:2  HVN_6:2  H4_SH:1  HVN_2:1  LON_L:1  LON_L+H1_SL:1  PDH:1  PDL+H4_SL:1
+   T2 by type over fills:  ASIA:2  LON:7  PD:1  H1:1  H4:4  POC:1  HVN:15  tie:1   no T2: 0   ties: PDL+H4_SL:1
+   T2 by name:             HVN_2:5  LON_H:4  H4_SH:3  HVN_1:3  HVN_3:3  LON_L:3  HVN_4:2  ASIA_H:1  ASIA_L:1  H1_SL:1  H4_SL:1  HVN_5:1  HVN_6:1  PDH:1  PDL+H4_SL:1  POC_PREV:1
+   check: targets carrying a same-side-named level: 0; targets that are the swept level: 0 (both 0 by construction)
+   for comparison, section 2.3's by-price T1 on these same fills would be a same-side-named level on 10
+   T1 distance from entry, in confirmation-bar ATR: min 0.04  q1 0.22  median 0.57  q3 1.41  max 2.82  (n=32)
+   T2 distance from entry, in confirmation-bar ATR: min 0.20  q1 0.57  median 1.72  q3 2.79  max 5.71  (n=32)
+   fills whose T1 price the day had already traded through before the fill bar (09:30 .. the bar before the fill): 29/32 (91%)   by T1 type: ASIA:0  LON:0  PD:1  H1:8  H4:1  POC:4  HVN:15  tie:0
+   entry geometry, no outcome: wick stop = sweep extreme -/+ 0.25 x ATR(14) at the confirmation bar
+   fills with entry-to-stop distance <= 0 (no R defined): 1
+   fills on a setup whose wick stop price had ALREADY traded on a bar after the sweep bar and before the fill bar (the funnel has no invalidation rule): 10 (02-27 eq, 03-06 eq, 04-06 eq, 05-15 eq, 05-20 fvg, 06-15 fvg, 06-24 eq, 07-13 eq, 08-11 eq, 09-01 eq)
+   entry to wick stop, in ATR:    min 0.95  q1 1.52  median 1.75  q3 2.07  max 2.60  (n=31)
+   entry to wick stop, in points: min 37.99  q1 58.68  median 76.52  q3 84.65  max 121.33  (n=31)
+   (round 1 itself read the ATR at the fill bar, not the confirmation bar; on these fills that stop distance, in points: min 38.22  q1 60.10  median 77.52  q3 85.48  max 125.81  (n=31))
+   T1 reward-to-risk against the wick stop: min 0.03  q1 0.11  median 0.31  q3 0.64  max 1.69  (n=31)
+   T2 reward-to-risk against the wick stop: min 0.12  q1 0.35  median 0.80  q3 1.45  max 3.02  (n=31)
+   fills with T1 closer than 1.0 R: 24/31 (77%); closer than 0.5 R: 21; T2 closer than 1.0 R: 16/31 (52%)
+   T1 closer than 1.0 R, by T1 type: ASIA:0  LON:0  PD:1  H1:6  H4:1  POC:3  HVN:13  tie:0
+
+3e. final against decided, fill for fill (no outcome: which days fill, and where)
+   decided fills 42 -> with the three classes only 39 -> with the open-side test too 30 (both still under round 1's same-bar zone convention, as decided is) -> with the zone in play read from before the bar (final, section 3f) 32
+   accounting: 42 decided - 4 fill days the class change removed + 1 it added = 39; - 9 the open-side test left unfilled + 0 it added = 30; - 0 the zone-in-play rule removed + 2 it added = 32
+   decided fill days that do not fill in final: 12 (of which the class change alone already removed 4, the open-side test removed 8, the zone-in-play rule removed 0); final fill days that did not fill in decided: 2; fill on both: 30 (same side, bar and entry 27)
+     gone: 02-17, 04-16, 05-26, 06-02, 06-09, 06-10, 06-22, 08-12, 08-14, 08-17, 08-20, 08-31
+     new:  04-06, 08-11
+
+3f. zone in play on bar i: the freshest zone KNOWN BEFORE bar i (usable < i). A gap or breaker that bar i itself
+    completes is known only at bar i's close; an order resting on the zone in play has traded inside bar i by then.
+    Round 1's convention (literal, decided, tjr_intraday: `fresh zones first, then the fill`) makes the new zone the
+    freshest ON bar i and so withholds any fill on bar i. No truncation cut can see the difference: both read bars <= i.
+   sweeps and confirmations are untouched by the rule (days differing upstream of the zone: 0)
+   fills under round 1's same-bar convention: 30; under the rule (final): 32; confirmed days whose fill differs (filled or not, bar, zone or entry): 2 of 88
+     04-06 S EQ 24309.75: same-bar convention no fill -> final eq@10:05 24309.75  (the fill bar itself completed a fvg)
+     08-11 L EQ 29728.25: same-bar convention no fill -> final eq@10:00 29728.25  (the fill bar itself completed a fvg)
+   final fills on a bar that itself completed a fresher zone: 2 (04-06 eq@10:05 new fvg, 08-11 eq@10:00 new fvg)
+   open-side refusals under the same-bar convention: 32 bars on 12 setups; under the rule: 38 bars on 17 setups. The extra ones are bars that completed a fresher zone: under the old convention such a bar was not read for a fill at all, under the rule eq was still in play on it and the bar opened at or through EQ. Days with the same fill but a different refusal list: 6 (02-16, 05-20, 06-09, 06-15, 07-17, 09-03)
+
+4. side-by-side: round 1 (DESIGN-tjr-intraday.md section 9, base) / literal wide / literal fresh-ifvg / decided / final
+   stage           round 1  literal    fresh  decided    final   fin/r1  fin/dec
+   sessions            149      149      149      149      149                  
+   sweeps               93       78       78      116      112     1.20     0.97
+   confirmations        50       66       49       90       88     1.76     0.98
+   zones                34       66       49       90       88     2.59     0.98
+   fills                 7       41       20       42       32     4.57     0.76
+   stage-to-stage conversion, round 1:       sweeps->confirmations 0.54  confirmations->zones 0.68  zones->fills 0.21
+   stage-to-stage conversion, literal wide:  sweeps->confirmations 0.85  confirmations->zones 1.00  zones->fills 0.62
+   stage-to-stage conversion, literal fresh: sweeps->confirmations 0.63  confirmations->zones 1.00  zones->fills 0.41
+   stage-to-stage conversion, decided:       sweeps->confirmations 0.78  confirmations->zones 1.00  zones->fills 0.47
+   stage-to-stage conversion, final:         sweeps->confirmations 0.79  confirmations->zones 1.00  zones->fills 0.36
+   attribution, same-bar zone convention, open-side test off (= the class correction alone): sweeps 112  confirmations 88  zones 88  fills 39
+   attribution, same-bar zone convention, open-side test on (= final but for the zone-in-play rule): sweeps 112  confirmations 88  zones 88  fills 30
+   attribution, zone-in-play rule, open-side test off (the run the 3b check uses):              sweeps 112  confirmations 88  zones 88  fills 44
+
+   day-level rows written: results\tjr_intraday\part2_final_days_NQ.csv (149 rows)
+
+=== ES  data/ES_5min_tv.csv  41067 bars  2026-02-15 23:00:00 .. 2026-09-11 20:55:00 UTC ===
+
+1. levels at 09:25
+   sessions with a sweep-window bar: 149   (with a bar stamped exactly 09:30: 149)
+   present: ASIA_H:149  ASIA_L:149  LON_H:149  LON_L:149  PDH:148  PDL:148  H1_SH:145  H1_SL:149  H4_SH:135  H4_SL:146  POC_PREV:148  HVN(any):148
+   HVN count per day: 0:1  1:1  2:1  3:5  4:26  5:15  6:100
+   composite depth per day (sessions in the profile): 20:129  19:1  18:1  17:1  16:1  15:1  14:1  13:1  12:1  11:1  10:1  9:1  8:1  7:1  6:1  5:1  4:1  3:1  2:1  1:1  0:1
+   POC_PREV absent on: ['2026-02-16']   (first session in the file has no previous session)
+
+2. funnel (section 2.5: fresh ifvg; eq as a retrace AND only on a bar that opens on the far side of EQ; per-class sweep with SESSION / H1 / H4)
+   sessions 149 -> sweeps 124 -> confirmations 79 -> zones in discount/premium 79 -> fills 34
+   zones excluding eq: 49
+   sweep-window bars skipped as ambiguous (two classes returned opposite sides): 3 bars on 3 days
+   sweep-window bars on which a class abstained and no class returned (not a sweep, not ambiguous): 32 bars on 26 days
+   sweep days with no admissible opposing 5-minute swing (bos/ote cannot fire): 0
+   sweep days whose pre-sweep swing sits on the wrong side of the sweep extreme (degenerate leg): 4
+   sweeps by side: long 59  short 65
+   cross-check, literal code with round 1's six levels only: sweeps 97; sweep day, bar, side and level identical to tjr_intraday.day_log: yes
+   round-1 six-level sweep days lost under the final rule: 1 (by class disagreement: 1; abstention-only: 0; other: 0); days swept only under the final rule: 28; swept under both: 96 (same side 82, same bar 77, same level 71)
+   decided (five-class) sweep days lost under the final rule: 4; gained: 0; both: 124 (same side 119, same bar 118, same level 118)
+   ifvg on the confirmation bar: 41 (fresh inversions by definition)
+   sweep bar: 09:30:66  09:35:29  09:40:20  09:45:9
+   confirmation bar: 09:35:24  09:40:22  09:45:12  09:50:11  09:55:5  10:00:3  10:05:2
+
+3. breakdowns
+   sweeps by level class, every breached level of the sweep side counted:  SESSION:193  H1:110  H4:64   (levels per sweep bar: 2.96)   by type: ASIA:75  LON:73  PD:45  H1:110  H4:64
+   sweeps by level class, the setup's level (deepest among the returning classes): SESSION:71  H1:26  H4:27   by type: ASIA:21  LON:38  PD:12  H1:26  H4:27
+     by name, every breached:  H1_SH:55  H1_SL:55  ASIA_H:39  LON_L:37  ASIA_L:36  LON_H:36  H4_SL:33  H4_SH:31  PDL:23  PDH:22
+     by name, the setup's:     LON_H:23  H4_SL:17  LON_L:15  ASIA_H:13  H1_SH:13  H1_SL:13  H4_SH:10  ASIA_L:8  PDH:6  PDL:6
+   opposite-side levels the sweep wick also took (abstaining classes, or a high run without a close back): 77 on 50 sweep bars   H1_SL:22  H1_SH:16  LON_L:8  ASIA_H:7  ASIA_L:6  PDL:5  H4_SL:4  LON_H:4  H4_SH:3  PDH:2
+   sweep bars where a deeper level of the sweep side sat in an abstaining class (recorded, not the setup's): 13
+   sweep days where NO session level of the sweep side was breached (H1/H4 alone on that side): 24
+   confirmations by type, on the confirmation bar:  bos:41  ifvg:41  ote:62   combos: bos+ote:23  bos+ifvg+ote:18  ifvg:17  ote:15  ifvg+ote:6
+   confirmations by type, any bar by 10:05:        bos:60  ifvg:54  ote:69
+   confirmations, first-to-fire ONLY that type:    bos:0  ifvg:17  ote:15
+   zones by type, any qualifying (in discount/premium, eq once usable): fvg:7  eq:79  ob:34  breaker:20
+   zones by type, the one used (freshest at the end or at the fill): fvg:5  eq:67  ob:0  breaker:7
+   confirmed days with no zone at all (no leg gap, no ob/breaker in discount, no eq excursion): 0
+   fills by zone used: fvg:2  eq:26  ob:0  breaker:6   by side: long:13  short:21   by fill bar: 09:50:15  09:55:5  10:00:9  10:05:5
+   fills by (level class, level type, confirmation types, zone used):
+     SESSION  LON   ifvg          eq       4
+     H1       H1    bos+ifvg+ote  breaker  3
+     H4       H4    ote           eq       3
+     H1       H1    bos+ote       eq       2
+     H4       H4    ifvg          eq       2
+     SESSION  ASIA  bos+ifvg+ote  eq       2
+     SESSION  LON   bos+ote       eq       2
+     SESSION  LON   ote           eq       2
+     SESSION  PD    bos+ifvg+ote  eq       2
+     SESSION  PD    bos+ote       eq       2
+     H1       H1    ifvg          eq       1
+     H1       H1    ote           breaker  1
+     H1       H1    ote           eq       1
+     H4       H4    ote           fvg      1
+     SESSION  ASIA  ifvg          fvg      1
+     SESSION  ASIA  ifvg+ote      eq       1
+     SESSION  ASIA  ote           eq       1
+     SESSION  LON   bos+ifvg+ote  breaker  1
+     SESSION  LON   bos+ote       breaker  1
+     SESSION  LON   ifvg+ote      eq       1
+   fills, per day: 2026-02-18 L H1_SL bos+ifvg+ote@09:40 breaker@09:50 6871.00 T1=ASIA_H; 2026-02-24 L PDL bos+ifvg+ote@09:40 eq@10:00 6850.75 T1=HVN_1; 2026-02-27 S H1_SH ote@09:40 breaker@09:50 6860.75 T1=HVN_1; 2026-03-04 S LON_H bos+ifvg+ote@09:35 breaker@10:00 6845.50 T1=H1_SL; 2026-03-05 L LON_L bos+ote@09:35 eq@10:05 6853.12 T1=HVN_1; 2026-03-11 S H1_SH ifvg@09:40 eq@09:55 6794.50 T1=H1_SL+H4_SL; 2026-04-01 S ASIA_H ifvg@09:45 fvg@09:50 6612.75 T1=HVN_1; 2026-04-23 L H1_SL bos+ifvg+ote@09:35 breaker@10:00 7152.75 T1=POC_PREV; 2026-04-24 S ASIA_H ote@09:40 eq@09:50 7158.75 T1=H1_SL; 2026-05-04 L H1_SL ote@09:45 eq@10:05 7249.25 T1=H1_SH; 2026-05-07 S PDH bos+ote@09:35 eq@10:05 7395.62 T1=LON_L+H1_SL; 2026-05-14 S LON_H ifvg@09:55 eq@10:00 7493.12 T1=LON_L+H1_SL; 2026-05-18 S ASIA_H ifvg+ote@09:40 eq@09:50 7430.12 T1=HVN_1; 2026-05-26 L LON_L ifvg@09:40 eq@09:50 7532.88 T1=H1_SH+H4_SH; 2026-05-27 S H1_SH bos+ifvg+ote@09:40 breaker@09:50 7537.00 T1=H1_SL; 2026-05-28 S LON_H ifvg@09:35 eq@09:50 7531.50 T1=HVN_2; 2026-06-01 L H4_SL ifvg@09:35 eq@09:55 7585.50 T1=H1_SH; 2026-06-04 S LON_H ote@09:40 eq@09:50 7554.25 T1=PDL; 2026-06-08 S LON_H bos+ote@09:35 eq@09:50 7454.12 T1=HVN_1; 2026-06-12 S ASIA_H bos+ifvg+ote@09:40 eq@10:00 7399.38 T1=HVN_6; 2026-06-16 S LON_H ifvg+ote@09:55 eq@10:00 7629.25 T1=POC_PREV; 2026-06-17 L H1_SL bos+ote@09:40 eq@09:55 7591.38 T1=HVN_1; 2026-06-24 S LON_H bos+ote@09:40 breaker@09:50 7458.50 T1=POC_PREV; 2026-07-03 S H1_SH bos+ote@09:45 eq@10:00 7554.50 T1=HVN_2; 2026-07-08 L H4_SL ote@09:35 eq@09:50 7509.50 T1=H1_SH; 2026-07-15 S PDH bos+ifvg+ote@09:45 eq@09:55 7611.00 T1=LON_L; 2026-07-16 S H4_SH ifvg@09:35 eq@10:00 7594.62 T1=H1_SL; 2026-07-24 S H4_SH ote@09:40 eq@10:05 7449.88 T1=LON_L; 2026-08-07 S LON_H ote@10:00 eq@10:05 7757.00 T1=H1_SL; 2026-08-11 S ASIA_H bos+ifvg+ote@09:35 eq@10:00 7783.62 T1=H1_SL; 2026-08-14 L LON_L ifvg@09:40 eq@09:55 7823.38 T1=ASIA_H+H1_SH; 2026-08-20 L PDL bos+ote@09:35 eq@09:50 7706.62 T1=H1_SH; 2026-08-28 L H4_SL ote@09:40 fvg@09:50 7750.50 T1=LON_H; 2026-09-09 L H4_SL ote@09:35 eq@09:50 7657.75 T1=H1_SH
+
+3b. eq zone (section 2.3 item 2 + section 2.5 item 1): usable after the 0.5 x ATR excursion, and a touch counts only on a bar that OPENS on the far side of EQ
+   excursion (unchanged): confirmed days 79: eq usable on 79 (at the confirmation bar 79, on a later bar 0); never by 10:05: 0
+   dealing range width at confirmation, in ATR: min 1.29  q1 2.32  median 2.89  q3 3.59  max 5.75  (n=79)
+   open-side test: bars refused (eligible entry-window bar, eq the freshest zone, open at or through EQ): 13 bars on 8 setups;  refused bars per setup: 1:6  3:1  4:1
+   refused bar stamps: 09:50:4  09:55:3  10:00:3  10:05:3   refused bars that opened exactly AT EQ: 0
+   what the refused setups then did: filled later on eq 3; filled on another zone that became freshest 0; no fill 5
+     filled later on eq: 03-05 L refused 09:50 -> eq@10:05, 07-24 S refused 09:50 -> eq@10:05, 08-14 L refused 09:50 -> eq@09:55
+     filled on another zone: (none)
+     no fill: 02-16 L refused 09:55, 05-15 L refused 09:55/10:00/10:05, 06-09 S refused 10:00, 07-14 S refused 10:05, 08-10 S refused 09:50/09:55/10:00/10:05
+   check: without the open-side test (same three classes, same zone-in-play rule) there are 39 fills, 31 on eq, 8 of them on a bar that opened at or through EQ; those are exactly the 8 refused setups, each first refused on the bar it would have filled: yes
+   eq fills: 26 of 34 fills; touching bar opened on the far side: 26 (all, by the rule); entry exactly at EQ: 26; fills on other zones: fvg:2  ob:0  breaker:6
+   co-occurrence at eq fills, other zone types in discount/premium at the fill bar: none:11  ob:9  breaker:3  ob+breaker:3   by type: fvg:0  ob:12  breaker:6
+   zone-stage days whose only zone is eq: 30; fills on those days: 10
+
+3c. level classes (section 2.5 item 2): SESSION = ASIA_H/L + LON_H/L + PDH/PDL as ONE class; H1; H4. POC and HVN never swept
+   class-disagreement bars: 3 on 3 days; abstention-only bars: 32 on 26 days; decided (five classes) had 6 and 18 bars
+   disagreement patterns (class:side; abstaining classes noted): SESSION:L;H1:S:1  SESSION:L;H4:S;H1:abstain:1  SESSION:S;H4:L;H1:abstain:1
+   days whose FIRST sweep-window verdict was ambiguous but a later bar swept: 2; sweep days with an abstention-only bar before the sweep bar: 19
+   classes returning on the sweep bar, count per sweep: 1:84  2:32  3:8   by class: SESSION:77  H1:47  H4:48
+   classes abstaining on the sweep bar: SESSION:5  H1:30  H4:2   sweep bars with any abstention: 33
+   SESSION on the sweep bar: returned:77  abstained:5  breached_no_close_back:34  untouched:8  absent:0
+     returned = round 1's own test swept this bar; abstained = a session low AND a session high in the wick (round 1's
+     ambiguity: round 1 SKIPS the bar); breached_no_close_back / untouched = round 1 does NOT sweep the bar
+   final sweeps made by a swing class alone (SESSION did not return on the sweep bar): 47 of 124
+     SESSION abstained, a swing class returned (round 1 would have SKIPPED the bar): 5  -> round 1 had no sweep that day: 4; round 1 swept a LATER bar that day: 1 (same side 0); round 1 swept an EARLIER bar that final skipped as a class disagreement: 0 (of which that bar is a logged disagreement bar: 0)   returning class: H1:3  H4:2
+     SESSION returned nothing, a swing class returned (round 1 would NOT have swept the bar): 42  -> round 1 had no sweep that day: 24; round 1 swept a LATER bar that day: 16 (same side 5); round 1 swept an EARLIER bar that final skipped as a class disagreement: 2 (of which that bar is a logged disagreement bar: 2)   returning class: H1:18  H4:16  H1+H4:8
+   final sweeps on which SESSION returned: 77; round 1 swept the same bar: 77 (same side 77, same setup level 71; a deeper H1/H4 level of the same side is the setup's on 6); round 1 swept a different bar: 0
+   days only H1/H4 made (no round-1 sweep that day at all): 28 (02-16 L H1_SL[SESSION breached_no_close_back], 02-17 S H1_SH[SESSION abstained], 02-18 L H1_SL[SESSION abstained], 03-06 L H4_SL[SESSION breached_no_close_back], 03-18 S H4_SH[SESSION breached_no_close_back], 03-23 L H1_SL[SESSION breached_no_close_back], 03-26 L H4_SL[SESSION breached_no_close_back], 03-27 L H4_SL[SESSION breached_no_close_back], 04-13 L H4_SL[SESSION abstained], 04-14 S H1_SH[SESSION breached_no_close_back], 04-16 L H1_SL[SESSION breached_no_close_back], 04-29 L H1_SL[SESSION breached_no_close_back], 05-04 L H1_SL[SESSION breached_no_close_back], 05-05 S H1_SH[SESSION breached_no_close_back], 05-20 L H4_SL[SESSION breached_no_close_back], 06-09 S H1_SH[SESSION breached_no_close_back], 06-15 S H4_SH[SESSION breached_no_close_back], 06-17 L H1_SL[SESSION untouched], 07-03 S H1_SH[SESSION untouched], 07-08 L H4_SL[SESSION breached_no_close_back], 07-22 S H4_SH[SESSION breached_no_close_back], 07-24 S H4_SH[SESSION untouched], 07-27 L H4_SL[SESSION abstained], 07-30 L H4_SL[SESSION breached_no_close_back], 08-19 L H4_SL[SESSION breached_no_close_back], 09-07 S H1_SH[SESSION untouched], 09-09 L H4_SL[SESSION breached_no_close_back], 09-10 S H1_SH[SESSION breached_no_close_back])
+   round-1 six-level sweep days lost: 1 of 97 (by class disagreement 1, abstention-only 0, other 0); decided lost 1
+   lost by class disagreement, per day: 03-10[SESSION:S;H4:L;H1:abstain]
+   decided sweep days that are not final sweep days (the five-class split made them; SESSION as one class abstains): 4 (03-09, 04-08, 06-25, 08-27)
+
+3d. targets, logged only (section 2.5 item 3): nearest opposing-NAMED level (long: ASIA_H LON_H PDH H1_SH H4_SH; short: the lows) or POC_PREV / HVN_*, strictly beyond the entry; T2 = the next distinct price
+   T1 by type over fills:  ASIA:1  LON:3  PD:1  H1:11  H4:0  POC:3  HVN:10  tie:5   no T1: 0   ties: LON_L+H1_SL:2  ASIA_H+H1_SH:1  H1_SH+H4_SH:1  H1_SL+H4_SL:1
+   T1 by name:             HVN_1:7  H1_SL:6  H1_SH:5  POC_PREV:3  HVN_2:2  LON_L:2  LON_L+H1_SL:2  ASIA_H:1  ASIA_H+H1_SH:1  H1_SH+H4_SH:1  H1_SL+H4_SL:1  HVN_6:1  LON_H:1  PDL:1
+   T2 by type over fills:  ASIA:4  LON:2  PD:1  H1:7  H4:5  POC:4  HVN:5  tie:6   no T2: 0   ties: POC_PREV+HVN_1:2  LON_L+H1_SL:1  PDH+H1_SH+H4_SH:1  PDH+H4_SH:1  POC_PREV+HVN_2:1
+   T2 by name:             H1_SL:5  ASIA_L:4  POC_PREV:4  H4_SL:3  HVN_1:3  H1_SH:2  H4_SH:2  HVN_2:2  LON_H:2  POC_PREV+HVN_1:2  LON_L+H1_SL:1  PDH+H1_SH+H4_SH:1  PDH+H4_SH:1  PDL:1  POC_PREV+HVN_2:1
+   check: targets carrying a same-side-named level: 0; targets that are the swept level: 0 (both 0 by construction)
+   for comparison, section 2.3's by-price T1 on these same fills would be a same-side-named level on 8
+   T1 distance from entry, in confirmation-bar ATR: min 0.03  q1 0.66  median 1.08  q3 1.71  max 3.37  (n=34)
+   T2 distance from entry, in confirmation-bar ATR: min 0.72  q1 1.37  median 2.07  q3 3.15  max 6.30  (n=34)
+   fills whose T1 price the day had already traded through before the fill bar (09:30 .. the bar before the fill): 27/34 (79%)   by T1 type: ASIA:1  LON:2  PD:1  H1:7  H4:0  POC:3  HVN:10  tie:3
+   entry geometry, no outcome: wick stop = sweep extreme -/+ 0.25 x ATR(14) at the confirmation bar
+   fills with entry-to-stop distance <= 0 (no R defined): 0
+   fills on a setup whose wick stop price had ALREADY traded on a bar after the sweep bar and before the fill bar (the funnel has no invalidation rule): 5 (04-01 fvg, 05-14 eq, 06-17 eq, 07-24 eq, 08-07 eq)
+   entry to wick stop, in ATR:    min 0.73  q1 1.37  median 1.58  q3 1.88  max 3.12  (n=34)
+   entry to wick stop, in points: min 4.56  q1 7.69  median 8.93  q3 11.02  max 28.07  (n=34)
+   (round 1 itself read the ATR at the fill bar, not the confirmation bar; on these fills that stop distance, in points: min 4.73  q1 7.72  median 9.12  q3 11.37  max 28.58  (n=34))
+   T1 reward-to-risk against the wick stop: min 0.01  q1 0.43  median 0.77  q3 1.09  max 2.14  (n=34)
+   T2 reward-to-risk against the wick stop: min 0.37  q1 0.90  median 1.48  q3 1.99  max 4.03  (n=34)
+   fills with T1 closer than 1.0 R: 23/34 (68%); closer than 0.5 R: 10; T2 closer than 1.0 R: 9/34 (26%)
+   T1 closer than 1.0 R, by T1 type: ASIA:0  LON:1  PD:0  H1:9  H4:0  POC:1  HVN:10  tie:2
+
+3e. final against decided, fill for fill (no outcome: which days fill, and where)
+   decided fills 40 -> with the three classes only 37 -> with the open-side test too 34 (both still under round 1's same-bar zone convention, as decided is) -> with the zone in play read from before the bar (final, section 3f) 34
+   accounting: 40 decided - 4 fill days the class change removed + 1 it added = 37; - 3 the open-side test left unfilled + 0 it added = 34; - 0 the zone-in-play rule removed + 0 it added = 34
+   decided fill days that do not fill in final: 7 (of which the class change alone already removed 4, the open-side test removed 3, the zone-in-play rule removed 0); final fill days that did not fill in decided: 1; fill on both: 33 (same side, bar and entry 28)
+     gone: 02-17, 04-08, 04-21, 05-15, 07-14, 08-10, 08-27
+     new:  02-18
+
+3f. zone in play on bar i: the freshest zone KNOWN BEFORE bar i (usable < i). A gap or breaker that bar i itself
+    completes is known only at bar i's close; an order resting on the zone in play has traded inside bar i by then.
+    Round 1's convention (literal, decided, tjr_intraday: `fresh zones first, then the fill`) makes the new zone the
+    freshest ON bar i and so withholds any fill on bar i. No truncation cut can see the difference: both read bars <= i.
+   sweeps and confirmations are untouched by the rule (days differing upstream of the zone: 0)
+   fills under round 1's same-bar convention: 34; under the rule (final): 34; confirmed days whose fill differs (filled or not, bar, zone or entry): 1 of 79
+     06-16 S EQ 7629.25: same-bar convention fvg@10:05 7629.50 -> final eq@10:00 7629.25  (the fill bar itself completed a fvg)
+   final fills on a bar that itself completed a fresher zone: 1 (06-16 eq@10:00 new fvg)
+   open-side refusals under the same-bar convention: 11 bars on 6 setups; under the rule: 13 bars on 8 setups. The extra ones are bars that completed a fresher zone: under the old convention such a bar was not read for a fill at all, under the rule eq was still in play on it and the bar opened at or through EQ. Days with the same fill but a different refusal list: 2 (02-16, 06-09)
+
+4. side-by-side: round 1 (DESIGN-tjr-intraday.md section 9, base) / literal wide / literal fresh-ifvg / decided / final
+   stage           round 1  literal    fresh  decided    final   fin/r1  fin/dec
+   sessions            149      149      149      149      149                  
+   sweeps               97       95       95      128      124     1.28     0.97
+   confirmations        46       76       53       83       79     1.72     0.95
+   zones                24       76       53       83       79     3.29     0.95
+   fills                 1       51       26       40       34    34.00     0.85
+   stage-to-stage conversion, round 1:       sweeps->confirmations 0.47  confirmations->zones 0.52  zones->fills 0.04
+   stage-to-stage conversion, literal wide:  sweeps->confirmations 0.80  confirmations->zones 1.00  zones->fills 0.67
+   stage-to-stage conversion, literal fresh: sweeps->confirmations 0.56  confirmations->zones 1.00  zones->fills 0.49
+   stage-to-stage conversion, decided:       sweeps->confirmations 0.65  confirmations->zones 1.00  zones->fills 0.48
+   stage-to-stage conversion, final:         sweeps->confirmations 0.64  confirmations->zones 1.00  zones->fills 0.43
+   attribution, same-bar zone convention, open-side test off (= the class correction alone): sweeps 124  confirmations 79  zones 79  fills 37
+   attribution, same-bar zone convention, open-side test on (= final but for the zone-in-play rule): sweeps 124  confirmations 79  zones 79  fills 34
+   attribution, zone-in-play rule, open-side test off (the run the 3b check uses):              sweeps 124  confirmations 79  zones 79  fills 39
+
+   day-level rows written: results\tjr_intraday\part2_final_days_ES.csv (149 rows)
+
+5. causality proof: NQ
+   no day on this frame has an eq zone that became usable after the confirmation bar (section 3b: later 0), so no excursion-bar cut exists; the seventh cut is a top-up
+   cut at bar 191 (2026-02-16 14:55:00 UTC): 2026-02-16 cut before the 09:55 bar (at a bar the open-side test refused: the refusal is not yet in the frame and must vanish)
+     earlier days: 0 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'no_fill' -> truncated 'no_fill'  (sweep 09:30 conf 09:50 fill -)
+   cut at bar 17714 (2026-05-15 13:55:00 UTC): 2026-05-15 cut before the 09:55 bar (at the bar that filled after 1 refused bar(s) (filled_later_on_eq): the refusals stay, the fill must vanish)
+     earlier days: 63 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'filled' -> truncated 'no_fill'  (sweep 09:30 conf 09:45 fill 09:55)
+   cut at bar 9713 (2026-04-06 14:10:00 UTC): 2026-04-06 cut before the 10:10 bar (after a fill bar that itself completed a fresher fvg: the fill on the older eq must stay)
+     earlier days: 34 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'filled' -> truncated 'filled'  (sweep 09:35 conf 10:00 fill 10:05)
+   cut at bar 416 (2026-02-17 14:40:00 UTC): 2026-02-17 cut before the 09:40 bar (inside the sweep window: the sweep is not yet in the frame)
+     earlier days: 1 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'no_fill' -> truncated 'no_sweep'  (sweep 09:40 conf 09:50 fill -)
+   cut at bar 4005 (2026-03-06 14:45:00 UTC): 2026-03-06 cut before the 09:45 bar (inside the sweep window: sweep in, confirmation not yet)
+     earlier days: 14 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'filled' -> truncated 'no_confirmation'  (sweep 09:30 conf 10:00 fill 10:05)
+   cut at bar 21529 (2026-06-04 13:50:00 UTC): 2026-06-04 cut before the 09:50 bar (inside the entry window: cut at the fill bar, the fill must vanish)
+     earlier days: 77 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'filled' -> truncated 'no_fill'  (sweep 09:35 conf 09:40 fill 09:50)
+   cut at bar 1247 (2026-02-20 14:55:00 UTC): 2026-02-20 cut before the 09:55 bar (inside the entry window: confirmation in, zones may still be forming)
+     earlier days: 4 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'no_fill' -> truncated 'no_fill'  (sweep 09:30 conf 09:35 fill -)
+   cut at bar 40743 (2026-09-10 17:00:00 UTC): 2026-09-10 cut before the 13:00 bar (mid-afternoon on a filled day)
+     earlier days: 147 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'filled' -> truncated 'filled'  (sweep 09:30 conf 10:00 fill 10:05)
+   cut at bar 732 (2026-02-18 18:00:00 UTC): 2026-02-18 cut before the 13:00 bar (mid-afternoon on a day with no sweep)
+     earlier days: 2 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'no_sweep' -> truncated 'no_sweep'  (sweep - conf - fill -)
+   cut at bar 2076 (2026-02-25 15:00:00 UTC): 2026-02-25 cut before the 10:00 bar (inside the entry window (top-up))
+     earlier days: 7 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'no_sweep' -> truncated 'no_sweep'  (sweep - conf - fill -)
+   result: all ten cuts reproduce the full run
+
+5. causality proof: ES
+   no day on this frame has an eq zone that became usable after the confirmation bar (section 3b: later 0), so no excursion-bar cut exists; the seventh cut is a top-up
+   cut at bar 191 (2026-02-16 14:55:00 UTC): 2026-02-16 cut before the 09:55 bar (at a bar the open-side test refused: the refusal is not yet in the frame and must vanish)
+     earlier days: 0 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'no_fill' -> truncated 'no_fill'  (sweep 09:30 conf 09:50 fill -)
+   cut at bar 3733 (2026-03-05 15:05:00 UTC): 2026-03-05 cut before the 10:05 bar (at the bar that filled after 1 refused bar(s) (filled_later_on_eq): the refusals stay, the fill must vanish)
+     earlier days: 13 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'filled' -> truncated 'no_fill'  (sweep 09:30 conf 09:35 fill 10:05)
+   cut at bar 23740 (2026-06-16 14:05:00 UTC): 2026-06-16 cut before the 10:05 bar (after a fill bar that itself completed a fresher fvg: the fill on the older eq must stay)
+     earlier days: 85 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'filled' -> truncated 'filled'  (sweep 09:30 conf 09:55 fill 10:00)
+   cut at bar 416 (2026-02-17 14:40:00 UTC): 2026-02-17 cut before the 09:40 bar (inside the sweep window: the sweep is not yet in the frame)
+     earlier days: 1 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'no_fill' -> truncated 'no_sweep'  (sweep 09:40 conf 09:50 fill -)
+   cut at bar 6489 (2026-03-19 13:45:00 UTC): 2026-03-19 cut before the 09:45 bar (inside the sweep window: sweep in, confirmation not yet)
+     earlier days: 23 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'no_fill' -> truncated 'no_confirmation'  (sweep 09:30 conf 09:45 fill -)
+   cut at bar 21529 (2026-06-04 13:50:00 UTC): 2026-06-04 cut before the 09:50 bar (inside the entry window: cut at the fill bar, the fill must vanish)
+     earlier days: 77 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'filled' -> truncated 'no_fill'  (sweep 09:35 conf 09:40 fill 09:50)
+   cut at bar 971 (2026-02-19 14:55:00 UTC): 2026-02-19 cut before the 09:55 bar (inside the entry window: confirmation in, zones may still be forming)
+     earlier days: 3 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'no_fill' -> truncated 'no_fill'  (sweep 09:35 conf 09:40 fill -)
+   cut at bar 40467 (2026-09-09 17:00:00 UTC): 2026-09-09 cut before the 13:00 bar (mid-afternoon on a filled day)
+     earlier days: 146 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'filled' -> truncated 'filled'  (sweep 09:30 conf 09:35 fill 09:50)
+   cut at bar 2112 (2026-02-25 18:00:00 UTC): 2026-02-25 cut before the 13:00 bar (mid-afternoon on a day with no sweep)
+     earlier days: 7 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'no_sweep' -> truncated 'no_sweep'  (sweep - conf - fill -)
+   cut at bar 4008 (2026-03-06 15:00:00 UTC): 2026-03-06 cut before the 10:00 bar (inside the entry window (top-up))
+     earlier days: 14 rows identical: yes   cut day as-of the cut identical: yes
+     cut day full-run outcome 'no_confirmation' -> truncated 'no_confirmation'  (sweep 09:45 conf - fill -)
+   result: all ten cuts reproduce the full run
+
+6. synthetic daily data (quantlab.data.synthetic): the no-09:30 path
+   clock is None: True; rows: 0 -> all-flat, no exception
+
+definitions as built (decided mode) -- where section 2.3 is silent, the choice made here
+   ifvg: `ifvg_fresh` is the definition; a gap is stale if any bar from its completion+1 through the sweep bar
+         (inclusive) closed through it; the inverting close is on a bar strictly after the sweep bar. No 3b section.
+   eq/ATR: ATR(14) is primitives.Bars.from_frame(df, 14).atr (Wilder ewm on the 5-minute frame, causal, back-filled
+         over the warmup), read at the confirmation bar once and frozen; the threshold EQ +/- 0.5 x ATR never moves.
+   eq/excursion: tested on completed bars' high (long) / low (short), >= (inclusive). Through the confirmation bar
+         the range extreme is the test (j = conf_idx); after it, every bar conf_idx+1 .. the last bar stamped < 10:10
+         is tested, whether or not it is an entry-window bar. The zone is not in the zone list before the excursion
+         bar, so another zone type (fvg/ob/breaker) may fill first on those bars; from the excursion bar on it is
+         in the list with formed = conf_idx, usable = j, and the same rank rule as before (formed, then ob<eq<breaker<fvg).
+   eq/fill: the touching bar must be strictly after usable (i > j), as for every zone. `open on the far side` is
+         open > EQ (long) / open < EQ (short); `already crossed` is open <= EQ (long), including open == EQ.
+   eq/co-occurrence: the other zone kinds in the zone list at the fill bar (all in discount/premium by the add rule),
+         including one that only became usable on the fill bar itself.
+   sweep/classes: the five classes are by level_type; a class with no level present on the day returns None and is
+         neither returning nor abstaining. Abstention is `a low AND a high of the class breached` regardless of close.
+         A class whose level was breached but not closed back inside returns None and is not an abstention.
+   sweep/level: the setup's level is the deepest breached level of the sweep side among the RETURNING classes only;
+         a deeper level of the same side inside an abstaining class is recorded in `breached` (deepest first) but is
+         not the setup's level. `breached` = every directional level of the sweep side the wick took, in any class;
+         `wick_also_took` = every directional level of the other side the wick took. POC/HVN are never in either.
+   sweep/first bar: the first sweep-window bar (09:30..09:45) with a one-sided verdict fixes the day; disagreement and
+         abstention-only bars are skipped and the next bar may sweep. `lost by class disagreement` = a round-1 sweep
+         day with no decided sweep and at least one disagreement bar; `abstention-only` = none, but an abstention bar.
+   targets: `opposing` is by price, as the task states (a long's T1 is the nearest level strictly above the entry,
+         any name, POC/HVN included); the count of T1s that are a same-side-named level is reported. Ties in distance
+         keep the level order ASIA_H, ASIA_L, LON_H, LON_L, PDH, PDL, H1_*, H4_*, POC_PREV, HVN_1..6 (stable sort).
+         Distances are in the confirmation-bar ATR. Targets are logged; no exit, no outcome, no R.
+   side-by-side: the literal and literal-fresh columns are literal-mode runs of this script in the same process,
+         which reproduce results/tjr_intraday/part2_wide_funnel.txt byte for byte (--mode literal).
+   proof: decided mode adds a seventh cut at the excursion bar of a day whose eq zone became usable after the
+         confirmation bar (an eq-filled such day when one exists), so the zone and any fill on it must vanish.
+
+definitions as built (final mode) -- section 2.5 on top of the block above; where 2.5 is silent, the choice made here
+   scope: final = decided with three changes and nothing else. Everything in the block above stands EXCEPT the
+         `sweep/classes` line's five classes (now three) and the `targets` lines (now opposing-named). The ifvg rule,
+         the eq midpoint, ATR, excursion, formed/usable stamps, the zone rank, the fill rule for fvg/ob/breaker and
+         the first-one-sided-bar rule are the same code. One more difference, found in review and not in 2.5: the
+         zone in play on a bar (`zone in play` below).
+   zone in play: on entry-window bar i the zone in play is the freshest (same rank) among zones with usable < i, i.e.
+         known at the close of bar i-1. Decided / literal / round 1 take the freshest of ALL zones including one bar i
+         itself completes, and then skip bar i because a fill needs i > usable: that reads bar i's close to withhold a
+         fill that an order resting on the older zone takes inside bar i (an eq limit rests at EQ from the open). It is
+         intrabar lookahead no truncation test can detect, so final mode does not do it; decided and literal keep it
+         because they must reproduce their committed printouts. A zone completed on bar i is in play from bar i+1, as
+         before. The count under round 1's convention is printed in 3f and in the summary (zone_same_bar=True, a
+         diagnostic run). The 5-minute funnel cannot order events inside a bar; tjr_human reads 1-minute bars (section 9.2).
+   eq/open-side: judged on the bar that would otherwise be read for a fill: an entry-window bar (09:50..10:05),
+         strictly after the confirmation bar and after eq's usable bar, the day not yet filled, eq the freshest zone.
+         Far side is STRICT: long open > EQ, short open < EQ; open == EQ is refused. A bar that opens at or through
+         EQ touches it by construction (low <= open), so `refused` = such a bar opened at or through EQ; a bar that
+         opens on the far side and does not reach EQ is neither a fill nor a refusal. The open is the open of the
+         completed bar being read. An eq fill is therefore always at EQ exactly (min(EQ, open) = EQ).
+   eq/in play: eq is in play while it is the freshest zone by the unchanged rank (formed, then ob<eq<breaker<fvg).
+         A refused bar fills nothing: no older zone (leg fvg, ob, earlier breaker) is consulted on it. A refusal does
+         not spend the setup and refusals are not capped: every later entry-window bar is judged afresh. A gap that
+         completes, or a breaker violated, on bar i out-ranks eq from bar i+1 (on bar i itself eq is still in play: it
+         fills or is refused there) and can fill from bar i+1; that is `filled on another zone that became freshest`,
+         not a fall-through. The open-side test applies to eq ONLY: fvg/ob/breaker still fill on a bar that opens inside or
+         through the zone (entry = the open), as in decided mode and round 1. While eq is still waiting for its
+         excursion it is not in the zone list, so another zone is in play then, as in decided mode (never happens here).
+   eq/log: per setup `eq_refused_bars`, `eq_refused_n` (0 on a confirmed day with none) and `eq_after_refusal` in
+         {filled_later_on_eq, filled_on_other_zone:<kind>, no_fill}. `eq_fill_open_far_side` is 1 on every eq fill now.
+   classes: SESSION = every level whose type is ASIA, LON or PD; H1 = H1_SH/SL; H4 = H4_SH/SL. Inside SESSION the test
+         is round 1's sweep_of_levels on the six: any session low AND any session high in one wick -> SESSION abstains,
+         whichever sessions they belong to; otherwise the deepest breached session level, closed back inside, returns.
+         An abstaining SESSION does not veto a swing class (section 2.3's combination rule, unchanged): H1 or H4 returning
+         alone sweeps the bar. Those bars are counted in 3c, split by whether SESSION abstained (round 1 skipped the bar)
+         or returned nothing (round 1 did not sweep it), and by whether round 1 swept that day at all.
+   classes/level: the setup's level is still the deepest breached level of the sweep side among the RETURNING classes,
+         so on a bar round 1 also swept, a deeper H1/H4 level of the same side that returned is the setup's level and
+         the sweep extreme is unchanged (it is the bar's low/high either way). `class_states` records each class on the
+         sweep bar: returned / abstained / breached_no_close_back / untouched / absent (no level of the class that day).
+   targets: candidates are the day's levels frozen at 09:25, by NAME for the directional ones (long: ASIA_H LON_H PDH
+         H1_SH H4_SH; short: ASIA_L LON_L PDL H1_SL H4_SL) plus POC_PREV and every HVN_* whichever side of the 09:25
+         close it rested on; a candidate qualifies iff strictly beyond the entry (long: price > entry). Equal price =
+         equal after rounding to 1e-6; the names are joined with + in the order ASIA_H .. H4_SL, POC_PREV, HVN_1..6 and
+         count once, under `tie`. T2 is the next distinct PRICE beyond T1 from the same set. No candidate -> no T1.
+         No `already taken` bookkeeping: a level the day traded through before the fill is still a target; how often
+         that is so for T1 is reported (`final_t1_already_traded`: bars 09:30 .. the bar before the fill bar).
+         The decided CSV columns t1 / t2 / t1_dir / t1_vol keep section 2.3's by-price reading; the final ones are final_*.
+   geometry: ATR = the confirmation-bar ATR(14) already frozen for eq (`eq_atr`). wick stop = sweep extreme - side x
+         0.25 x ATR; R = side x (entry - stop); reward-to-risk = side x (target - entry) / R. Round 1's own engine
+         read the ATR at the FILL bar (tjr_intraday: cb.atr[ctx.last[i]]); the task fixed the confirmation bar, and the
+         stop distance under round 1's reading is printed next to it. Nothing after the fill bar is read: no stop is
+         simulated, no target is tested, no outcome exists. The funnel has NO invalidation rule (section 2 has none):
+         a setup whose sweep extreme or wick stop traded after the sweep still fills if a zone is touched. Such fills
+         are counted (`wick_stop_traded_before_fill`), and a fill whose entry is already beyond the stop has no R and
+         is left out of the reward-to-risk rows (round 1's engine books that as `no_risk`).
+   side-by-side: the literal, fresh and decided columns are runs of this script in the same process; they are the
+         committed part2_wide_funnel.txt / part2_decided_funnel.txt numbers (--mode literal / decided reproduce them).
+         `attribution` rows are final mode with the open-side test and / or the zone-in-play rule switched off
+         (WideFunnel(eq_open_side=False), WideFunnel(zone_same_bar=True)): diagnostic runs, not modes, not specs.
+   eq/co-occurrence: at an eq fill, the other zone types among the zones known before the fill bar (usable < i).
+         `fill_bar_new_zone` names the fresher zone the fill bar itself completed, when it did.
+   proof: the seven decided cuts, plus (a) a cut at a bar the open-side test refused, (b) a cut at the later bar
+         that then filled, and (c) a cut at the bar after a fill bar that itself completed a fresher zone (the fill on
+         the older zone must stay), when such days exist on the frame. (c) shows the fill does not read bar i+1; it
+         cannot show the intrabar point, which is an argument about bar i's close, not a truncation.
+
+summary
+   NQ (round 1): sessions 149 -> sweeps 93 -> confirmations 50 -> zones 34 -> fills 7
+   NQ (literal wide): sessions 149 -> sweeps 78 -> confirmations 66 -> zones 66 -> fills 41
+   NQ (literal fresh-ifvg): sessions 149 -> sweeps 78 -> confirmations 49 -> zones 49 -> fills 20
+   NQ (decided): sessions 149 -> sweeps 116 -> confirmations 90 -> zones 90 -> fills 42
+   NQ (final): sessions 149 -> sweeps 112 -> confirmations 88 -> zones 88 -> fills 32   causality: ok
+   NQ eq: 38 bars refused by the open-side test on 17 setups (then filled on eq 3, on another zone 2, no fill 12); eq fills 29 of 32
+   NQ zone in play: read from before the bar; under round 1's same-bar convention the fills would be 30 (final 32); days whose fill differs: 04-06, 08-11
+   NQ classes: sweeps 112; disagreement bars 0; abstention-only bars 56; round-1 sweep days lost 0, days only H1/H4 made 19; swing class alone with SESSION abstaining 6, with SESSION returning nothing 26
+   NQ targets: no T1 on 0 of 32 fills, no T2 on 0; T1 closer than 1.0 R on 24 of 31
+   ES (round 1): sessions 149 -> sweeps 97 -> confirmations 46 -> zones 24 -> fills 1
+   ES (literal wide): sessions 149 -> sweeps 95 -> confirmations 76 -> zones 76 -> fills 51
+   ES (literal fresh-ifvg): sessions 149 -> sweeps 95 -> confirmations 53 -> zones 53 -> fills 26
+   ES (decided): sessions 149 -> sweeps 128 -> confirmations 83 -> zones 83 -> fills 40
+   ES (final): sessions 149 -> sweeps 124 -> confirmations 79 -> zones 79 -> fills 34   causality: ok
+   ES eq: 13 bars refused by the open-side test on 8 setups (then filled on eq 3, on another zone 0, no fill 5); eq fills 26 of 34
+   ES zone in play: read from before the bar; under round 1's same-bar convention the fills would be 34 (final 34); days whose fill differs: 06-16
+   ES classes: sweeps 124; disagreement bars 3; abstention-only bars 32; round-1 sweep days lost 1, days only H1/H4 made 28; swing class alone with SESSION abstaining 5, with SESSION returning nothing 42
+   ES targets: no T1 on 0 of 34 fills, no T2 on 0; T1 closer than 1.0 R on 23 of 34
+   fills, all instruments: 66 over 149 sessions (0.44 a session); 100 filled trades at that rate: 226 sessions

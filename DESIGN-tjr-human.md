@@ -436,6 +436,95 @@ reproduce §2.4 and §2.1 byte for byte).
    the same price are one target carrying both names. No such level beyond
    the entry → no T1 for that trade, counted and reported.
 
+### 2.6 The final re-run under §2.5 (2026-09-18) — 66 fills over 149 sessions
+
+`tjr_wide_funnel.py --mode final` (now the default; `--mode decided` and
+`--mode literal` reproduce §2.4 and §2.1 byte for byte). Printout
+`results/tjr_intraday/part2_final_funnel.txt`, day rows
+`part2_final_days_{NQ,ES}.csv`. Two adversarial reviews over two rounds,
+neither refuted; causality clean on the script's ten cuts per instrument and
+on roughly 1,500 reviewer cuts per instrument, including every bar from 09:35
+to 10:15 on every day, random-walk garbling of everything after the cut, and
+255 variants of each refused bar's high, low and close. No outcome read, no
+trial counted.
+
+| stage | NQ round 1 | NQ decided | **NQ final** | ES round 1 | ES decided | **ES final** |
+|---|---|---|---|---|---|---|
+| sessions | 149 | 149 | 149 | 149 | 149 | 149 |
+| sweeps | 93 | 116 | **112** | 97 | 128 | **124** |
+| confirmations | 50 | 90 | **88** | 46 | 83 | **79** |
+| zones | 34 | 90 | **88** | 24 | 83 | **79** |
+| fills | 7 | 42 | **32** | 1 | 40 | **34** |
+
+**66 fills over 149 sessions, 0.44 a session-pair: 100 filled trades is about
+226 sessions of both instruments — close to eleven months, not eight and a
+half.** And §9.2's dead-setup rule is not in the funnel: on 15 of the 66
+fills the wick stop had already traded before the fill (one NQ fill has its
+entry beyond the stop and no R at all). With those gone the rate is about 51
+per 149 sessions and the sample is nearer fourteen months. The 1-minute
+trigger will move it again. The sample stays 100 (§5); this is what it costs.
+
+**Where the fills went.** NQ: 42 decided − 4 lost and + 1 gained by the class
+change = 39; − 9 left unfilled by the open-side test = 30; + 2 by the
+zone-in-play reading below = 32. ES: 40 − 4 + 1 = 37; − 3 = 34; ± 0 = 34.
+
+1. **The open-side test bites and `eq` is now a retrace.** It refused 38 bars
+   on 17 NQ setups and 13 bars on 8 ES setups, every one a bar that opened at
+   or through the midpoint; 12 and 5 of those setups never filled, 3 and 3
+   filled later on `eq` from the far side, and 2 NQ setups filled on the `fvg`
+   the refused bar itself completed. `eq` still carries 29 of 32 and 26
+   of 34 fills, but each of them now opens strictly beyond the midpoint,
+   trades back to it and enters exactly at it. Co-occurrence at `eq` fills:
+   no other zone on 14 / 11, an `ob` on 13 / 12, a breaker on 2 / 6.
+2. **One `SESSION` class restores round 1's ambiguity rule.** Round-1 sweep
+   days lost: 0 of 93 on NQ, 1 of 97 on ES (03-10, `SESSION` short against H4
+   long). Class disagreement all season: 0 NQ bars, 3 ES. The sweeps above
+   round 1's are the swing classes': on 19 NQ and 28 ES days only H1 or H4
+   made the sweep; on 6 / 5 sweep bars `SESSION` abstained and a swing class
+   returned; on 26 / 42 `SESSION` was breached without closing back, or
+   untouched, and a swing class returned. The setup's level is a session level
+   on 68 / 71 sweeps, H1 on 15 / 26, H4 on 29 / 27.
+3. **Targets are opposing-named, and that exposes a second problem.** No
+   target is a same-side level or the swept level any more (under §2.3's
+   by-price reading 10 / 8 of these fills would have had one). But the
+   geometry at entry — no bar after the fill is read — says:
+
+   | against the wick stop | NQ | ES |
+   |---|---|---|
+   | T1 reward-to-risk, median (quartiles) | 0.31 R (0.11 – 0.64) | 0.77 R (0.43 – 1.09) |
+   | T2 reward-to-risk, median | 0.80 R | 1.48 R |
+   | fills with T1 closer than 1 R | 24 of 31 | 23 of 34 |
+   | fills where T1's price **had already traded** before the fill | 29 of 32 | 27 of 34 |
+
+   The nearest opposing level beyond the entry is usually one the
+   displacement leg already ran through on its way up: price swept, broke
+   structure through that level, then retraced to the midpoint, and the
+   "target" sits between the entry and a high the session has already made.
+   It is not an untaken pool. TJR's target is the next liquidity *not yet
+   taken*. As specified, the whole position would exit at a median third of
+   an R on NQ, which would cap the very excursions §0 set out to measure.
+   **The user's call before trade one** (§9.10): keep §2.5's nearest level,
+   or require the target not to have traded since the 09:30 open. The
+   detector journals both for every signal, so the choice costs nothing to
+   make late — but it must be made before `arm`.
+
+**One reading adopted here that §2.5 did not contain, flagged by review as the
+user's to overrule.** On an entry-window bar *i*, the zone in play is the
+freshest zone known **before** bar *i*; a gap or breaker that bar *i* itself
+completes is in play from *i* + 1. Round 1's convention (§2.1, still used by
+the decided and literal modes) makes the new zone the freshest *on* bar *i*
+and so uses that bar's close to cancel a fill that a resting order on the
+older zone takes inside it — a dependence on the close of the bar being
+filled. No truncation test can see the difference; it is about the order of
+events inside one 5-minute bar. It moves 2 NQ fills (04-06, 08-11) and the
+bar of one ES fill (06-16): 66 with it, 64 under round 1's convention. The
+1-minute detector (§9.2) uses the causal reading.
+
+**Conventions recorded, not changed:** the open-side test applies to `eq`
+only — a bar that opens through an `fvg` or a breaker fills at its own open;
+EQ can fall off the quarter-tick grid and §2.5 gives no rounding rule; the
+CSV column named `outcome` is the funnel stage reached, not a trade result.
+
 ## 3. Part 3 — `tjr_human` (T-7)
 
 ### 3.1 Signal layer
@@ -814,4 +903,15 @@ data and refuses market data files.
    do not suspend the wick stop.
 3. Observe mode until `arm`.
 4. The replay prints no outcomes on market data.
-5. A setup dies if price trades beyond the wick stop before the entry.
+5. A setup dies if price trades beyond the wick stop before the entry. (On
+   the funnel's final fills that is 15 of 66 — §2.6.)
+6. The zone in play on a bar is the freshest zone known **before** that bar
+   (§2.6's causal reading; 2 of the funnel's 66 fills depend on it).
+7. **`TARGET_RULE = "nearest"`**, §2.5 as the user wrote it. But §2.6 found
+   that target already traded before the fill on 56 of 66 fills and a median
+   0.31 R (NQ) / 0.77 R (ES) from the entry. The detector therefore computes
+   and journals, for every signal, both the nearest target and the nearest
+   **untaken** one — an opposing-named level or POC / HVN beyond the entry
+   that price has not traded at since the 09:30 open — and the constant
+   chooses which one the bot exits at. It is recorded in `ARMED` with the
+   hashes and cannot change after trade one. `"untaken"` is recommended.

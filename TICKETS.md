@@ -59,8 +59,11 @@ and the ambiguity rule removes more round-1 sweeps than the new levels add.
 **Decided 2026-09-12** (`DESIGN-tjr-human.md` §2.3): `ifvg` fresh-only;
 `eq` valid only as a retrace into it (≥ 0.5 ATR beyond the midpoint first),
 co-occurrence logged; ambiguity within a level class, POC / HVN as targets
-only. The funnel is re-run once under the three (§2.4) for the fill count the
-experiment will produce. Alert path approved as recommended (§7). Build after T-1 and T-4 are live —
+only. The funnel was re-run under the three (§2.4), corrected on 2026-09-18
+(§2.5: `eq` open-side test, the six session levels as one class, opposing-named
+targets) and re-run a last time (§2.6): **66 fills per 149 sessions, about
+226 sessions for 100 trades; nearer 290 once dead setups are dropped.** Open
+before `arm`: the target rule (nearest, or nearest untaken — §2.6, §9.10). Alert path approved as recommended (§7). Build after T-1 and T-4 are live —
 the run needs the kill rules and the push channel, and its human controls
 ride the same Telegram bot. Never goes live on the box before a dry run is
 shown.
