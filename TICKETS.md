@@ -8,8 +8,11 @@ deleting it when the commit that fixes it lands. Order matters and is stated.
 1. **T-1 kill rules** together with **T-4 heartbeat, halt flag, push alerts**
    (plain code, no LLM in the loop) — **built 2026-09-12 to `DESIGN-risk.md`,
    dry-run in its §7, NOT installed on the box.** Closes when installed:
-   needs the user's go, a hand-written `/etc/quantlab/telegram.env`, and the
-   steps in `deploy/README.md` §8–§9
+   needs a hand-written `/etc/quantlab/telegram.env` and the steps in
+   `deploy/README.md` §8–§9. **The user said go on 2026-09-18; the install is
+   waiting on `git push origin main`, which the assistant's session is not
+   permitted to run.** R2 now uses a σ floor and a 3.0 σ band (`DESIGN-risk.md`
+   §1.2)
 2. **T-7 indicator + human-exit experiment** — build only after T-1 and T-4
    are live; its Part 1 (trailing benchmark) and Part 2 (wide funnel) are
    done (2026-09-12, `DESIGN-tjr-human.md` §1 and §2.2); the three
@@ -31,6 +34,12 @@ the discretionary exit layer the mechanical test could not, as an experiment
 on the human, with its own pre-registration in `DESIGN-tjr-human.md`.
 
 ## T-7 — Indicator + human-exit experiment (`tjr_human`)
+
+**Status 2026-09-18: built to `DESIGN-tjr-human.md` §9 and reviewed; starts in
+observe mode; never run against the live TradingView app; not armed. Before
+`arm`: the seven decisions of §9.13 (level depth, the `STOP` band, the target
+rule and the `trial_sharpes` definition first) and one observe session to
+check the pane read and the chart-style read against the real app.**
 
 **Why.** Two round-1 numbers point somewhere the rules cannot go: T1 printed
 later on 4 of 8, and the median favourable excursion *after* the fixed stop
