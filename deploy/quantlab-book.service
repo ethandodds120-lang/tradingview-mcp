@@ -22,6 +22,7 @@ Type=oneshot
 User=root
 WorkingDirectory=/root/tradingview-mcp
 Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/quantlab/telegram.env
 ExecStart=/root/tradingview-mcp/env/bin/python paper.py book --write
 
 # reading a handful of csv files should take seconds; a minute means something is wrong

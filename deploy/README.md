@@ -41,6 +41,7 @@ not polled**, which is why every `start` and `stop` is followed by a sync.
 | `quantlab-tick.service` | `/bin/true` + the generated `Wants=` drop-in |
 | `quantlab-poll@.service` | one poll of run `%i`; `Before=quantlab-book.service` |
 | `quantlab-book.service` | `paper.py book --write`, after the polls |
+| `quantlab-heartbeat.timer` / `.service` | its own clock, `*:2/5`: `paper.py heartbeat` — says when a run or the book has gone stale (§8) |
 
 The old per-run `quantlab-poll@<id>.timer` instances and the single-run
 `quantlab-poll.service`/`.timer` pair are superseded; `migrate-to-tick.sh`
@@ -225,36 +226,176 @@ Get-ScheduledTask -TaskName "quantlab-sol-trend" -ErrorAction SilentlyContinue
 
 Both should come back empty. The VPS is now the only writer.
 
-## 8. Notice when it stops
+## 8. Notice when it stops — the heartbeat
 
-The failure mode is silence, not a crash. `state.json`'s `updated` field is the
-heartbeat for each run and `book.json`'s `as_of` is the heartbeat for the tick.
-With the tick at five minutes, anything over about fifteen minutes stale means
-the schedule is not running:
+The failure mode is silence, not a crash. `state.json`'s `updated` field moves
+at the end of every poll of every run, and `book.json`'s `as_of` moves on
+every tick, so those two are the heartbeats. What reads them is
+`paper.py heartbeat`, run by **its own timer** — `quantlab-heartbeat.timer`,
+`*:2/5`, two minutes after each tick — and deliberately *not* by the tick's
+`Wants=` list: a dead tick cannot report itself, so the watcher must not depend
+on the thing it watches.
+
+What it checks, every five minutes (DESIGN-risk.md §3):
+
+| thing | fresh means | else |
+|---|---|---|
+| each run that is not `STOPPED` — halted runs included, they still poll | `state.updated` no older than **2 × tick_s** (`execution.tick_s`, else 300 → 600 s) | stale |
+| `paper_runs/book.json` | `as_of` no older than 2 × tick_s | stale |
+
+On a fresh → stale transition it writes one `ALERT … [stale] …` line to
+`paper_runs/alerts.log` and pushes it to Telegram if §9 is set up; while the
+thing stays stale it repeats **at most once every six hours**, so a dead
+network is one message, not four an hour. Every stale item that is due goes
+in **one message per pass**, so a pass makes at most one push. A push that
+fails on the transport does not count as the six-hourly alert: the item stays
+due, but it is not retried on every five-minute pass — the failure stamps
+`retry_not_before` (15 minutes on) on the item in `heartbeat.json`, together
+with `last_attempt` and `last_error`, and the pass that finally delivers it is
+the one the six hours count from. `heartbeat.json` is written before the
+push, so a pass that dies mid-push still leaves `stale_since` on disk. Each
+`notify` is exactly one line in `alerts.log` — a multi-item message has its
+newlines folded to ` | ` there (the Telegram text keeps them), and so is the
+`[telegram] push ... failed` line that follows a failed push, whatever the
+transport returned (an HTML error page from Telegram's edge is folded the same
+way, and stored folded as the item's `last_error`). Recovery (stale → fresh) is
+written to `alerts.log` and clears the item from `paper_runs/heartbeat.json`;
+it is not pushed unless the unit's `ExecStart` carries `--push-recovery`.
+
+Install the timer (both files are in `deploy/`; `User=` and the paths are set
+for root's checkout at `/root/tradingview-mcp`, edit them as in §4 otherwise):
 
 ```bash
-python3 - <<'PY'
-import json, datetime, pathlib
-now = datetime.datetime.now(datetime.UTC)
-for p in sorted(pathlib.Path("paper_runs").glob("*/state.json")):
-    if (p.parent / "STOPPED").exists():
-        continue
-    age = now - datetime.datetime.fromisoformat(json.loads(p.read_text())["updated"])
-    print(f"{p.parent.name:<32} last poll {age.total_seconds()/60:5.1f} min ago",
-          "STALE" if age.total_seconds() > 900 else "ok")
-b = pathlib.Path("paper_runs/book.json")
-if b.exists():
-    age = now - datetime.datetime.fromisoformat(json.loads(b.read_text())["as_of"])
-    print(f"{'book':<32} as_of     {age.total_seconds()/60:5.1f} min ago",
-          "STALE" if age.total_seconds() > 900 else "ok")
-else:
-    print("book.json missing — every run is sizing at k=1 and saying so in alerts.log")
-PY
+sudo cp ~/tradingview-mcp/deploy/quantlab-heartbeat.service \
+        ~/tradingview-mcp/deploy/quantlab-heartbeat.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now quantlab-heartbeat.timer
+systemctl list-timers 'quantlab-*'          # want: quantlab-tick.timer AND quantlab-heartbeat.timer
+```
+
+Then look before the timer does:
+
+```bash
+cd ~/tradingview-mcp
+env/bin/python paper.py heartbeat --dry-run   # prints; writes nothing, sends nothing
+```
+
+Every run in `wants.conf` should show `fresh` with an age under 300 s and
+`book.json` the same. Then one real pass, so the first alert (if any) happens
+while you are watching rather than at 03:00:
+
+```bash
+env/bin/python paper.py heartbeat
+tail -5 paper_runs/alerts.log
+cat paper_runs/heartbeat.json
 ```
 
 A stale book is not silent on the run side either: each decision made without a
-fresh book prints an `ALERT` line and appends it to `paper_runs/alerts.log`. Tail
-that file too.
+fresh book prints an `ALERT … [book] …` line and appends it to
+`paper_runs/alerts.log`. That one stays log-only — the heartbeat's `stale` on
+`book.json` already carries the cause.
 
-Wire this into whatever alerting you use. Without it you will not find out the bot
-died until you go looking, which last time was three days.
+Limit, stated plainly: if systemd or the box itself is down, nothing on the box
+can say so. An external check of the box is outside this repo.
+
+The kill rules (DESIGN-risk.md §1) are the other thing that speaks up on its
+own: a run that trips one writes a `HALTED` marker, journals it, pushes a
+`halt` alert, and from then on polls and journals without deciding or routing
+until a person runs `paper.py resume --id <run> --reason "..."`. `paper.py
+risk --all` shows every rule's numbers, read-only, at any time. A halted run
+is still in `wants.conf` (it must keep polling); only `paper.py stop` takes it
+out. Run `resume` between ticks: a poll already in flight (or a foreground
+`paper.py run` loop) re-reads the marker and the new epoch from disk before it
+evaluates the rules, and its save keeps the epoch on disk whichever epoch it
+was holding (none, or that of an earlier resume), but the tick that is
+running while you type is the one that should not also be deciding.
+
+## 9. Telegram — the push channel
+
+Three events are pushed from the box: a routed fill, a stale run or book, and a
+kill-rule halt (plus `alert --test`). Nothing else leaves the box, and nothing
+is pushed by a chat session or anything that needs a person logged in. The
+transport is one HTTPS POST to Telegram's `sendMessage` from the poll, the
+book and the heartbeat units, 10 s timeout, one retry, **20 s of wall clock
+at most per alert** — each attempt runs in a worker thread that is abandoned
+at 10 s, because urllib's timeout bounds a socket operation, not DNS or a
+server that drips bytes; a failure is one more line in `alerts.log`, never an
+exception into a poll.
+
+**Every step below is done by you, by hand. The environment file is written by
+you and read by systemd. No code in this repo and no chat session ever reads,
+writes, prints or transmits the token; `paper.py alert --test` reports only
+whether the two variables are set and whether Telegram accepted a test line.**
+
+1. **Create the bot.** In Telegram, message `@BotFather`, send `/newbot`, give
+   it a name and a username ending in `bot`. BotFather replies with the bot
+   token (`123456789:AA…`). Keep it; do not paste it into a chat with anyone,
+   including an assistant.
+
+2. **Get your chat id.** Open a chat with the new bot and send it any message
+   (a bot cannot message you until you have messaged it). Then, in a browser
+   or with curl **on your own machine**, open
+   `https://api.telegram.org/bot<token>/getUpdates` and read the
+   `"chat":{"id": …}` number from the reply. For a group, add the bot to the
+   group, send a message there, and the id is the negative number in the same
+   place.
+
+3. **Write the environment file on the VPS, as root, mode 600.** Type it in an
+   editor; do not build it with a script and do not put the token on a command
+   line where it lands in shell history:
+
+   ```bash
+   sudo mkdir -p /etc/quantlab
+   sudo chmod 700 /etc/quantlab
+   sudo nano /etc/quantlab/telegram.env
+   ```
+
+   with exactly two lines:
+
+   ```
+   TELEGRAM_BOT_TOKEN=123456789:AA...
+   TELEGRAM_CHAT_ID=987654321
+   ```
+
+   then
+
+   ```bash
+   sudo chmod 600 /etc/quantlab/telegram.env
+   sudo chown root:root /etc/quantlab/telegram.env     # the units run as root
+   ```
+
+   If the units run as another user, `chown` the file to that user instead —
+   `EnvironmentFile=` is read by systemd as the service's user.
+
+4. **The units already point at it.** `quantlab-poll@.service`,
+   `quantlab-book.service` and `quantlab-heartbeat.service` each carry
+   `EnvironmentFile=-/etc/quantlab/telegram.env`; the leading `-` means a
+   missing file is not an error, so a box without the file runs exactly as
+   before and only logs. After editing units or installing them for the first
+   time: `sudo systemctl daemon-reload`.
+
+5. **Install the heartbeat timer** if §8 has not been done yet.
+
+6. **Test it from the box, as the unit's user, with the file loaded the way
+   systemd loads it:**
+
+   ```bash
+   cd ~/tradingview-mcp
+   sudo systemd-run --wait --pipe --collect -p EnvironmentFile=/etc/quantlab/telegram.env \
+       -p WorkingDirectory=/root/tradingview-mcp \
+       /root/tradingview-mcp/env/bin/python paper.py alert --test
+   ```
+
+   or, more simply, run it as root from a shell that has read the file:
+
+   ```bash
+   sudo bash -c 'set -a; . /etc/quantlab/telegram.env; set +a; cd /root/tradingview-mcp && env/bin/python paper.py alert --test'
+   ```
+
+   It prints `TELEGRAM_BOT_TOKEN set` / `TELEGRAM_CHAT_ID set` (never the
+   values), sends one fixed line naming the host and the UTC time, and says
+   whether Telegram accepted it. With the variables unset it says so, sends
+   nothing, tries no network, and exits 0.
+
+7. **Rotate or revoke** with BotFather (`/revoke`), then rewrite the file by
+   hand. Nothing caches the token: the next unit start reads the new one.

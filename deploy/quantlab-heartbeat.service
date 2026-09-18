@@ -1,0 +1,59 @@
+# The watcher. Fired by quantlab-heartbeat.timer — its OWN timer, not the
+# tick's Wants= list, because a dead tick cannot report itself and the thing
+# that watches must not depend on the thing it watches (DESIGN-risk.md §3).
+#
+# `paper.py heartbeat` reads state.json for every run that is not STOPPED
+# (halted runs included — they still poll) and paper_runs/book.json, and calls
+# anything older than 2 x tick_s stale. A fresh -> stale transition is pushed
+# (Telegram, if /etc/quantlab/telegram.env is there), then at most once every
+# six hours while it stays stale; recovery is written to alerts.log only. It
+# keeps its own state in paper_runs/heartbeat.json.
+#
+# EnvironmentFile=- : the leading dash means a missing file is not an error —
+# without it the heartbeat still runs and still logs, it just cannot push. The
+# file is written by you, by hand (deploy/README.md §9); no code writes it.
+#
+# Limit, stated plainly: if systemd or the box itself is down, nothing on the
+# box can say so. An external check of the box is outside this unit.
+#
+# Set User and the paths to match the account that owns the checkout. Careful if
+# that is root: root's home is /root, not /home/root.
+
+[Unit]
+Description=quantlab heartbeat — is every run and the book still fresh
+# Like the poll and book units: Persistent=true replays a missed pass on boot,
+# and without this ordering that pass could fire before the uplink is up, fail
+# its push, and (were the failure to count) go quiet for six hours.
+After=network-online.target
+Wants=network-online.target
+# Ordering only, deliberately no Wants=: on a boot where both timers replay a
+# missed run, the tick's polls and book (each poll is Before= the book) finish
+# before this pass reads state.json and book.json, so it reads the state the
+# tick just wrote rather than the state from before the box went down and
+# reports it stale. If the tick is gone the book unit never starts, After= is
+# then a no-op, and this pass still runs and says so — which is the point.
+# What it costs: while a poll is still running, the book's job is queued behind
+# it and this pass is queued behind the book, so a hung poll DELAYS the watcher
+# (never cancels it) by at most the poll's and the book's own timeouts. And on
+# boot the ordering is best effort — it only holds against a book job that is
+# already queued when this one becomes runnable; all three units wait for
+# network-online, which normally outlasts the timers' 5 s of jitter. If it does
+# not hold, the cost is one `stale` push on boot and a recovery line after it.
+After=quantlab-book.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/tradingview-mcp
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/quantlab/telegram.env
+ExecStart=/root/tradingview-mcp/env/bin/python paper.py heartbeat
+
+# A pass reads a handful of json files, writes heartbeat.json, and then makes
+# at most ONE push — every stale item that is due goes in one message — which
+# quantlab/alerts.py bounds at 20 s of wall clock (two attempts, each abandoned
+# at 10 s; DNS included). Recoveries are log-only unless --push-recovery, each
+# another 20 s at worst. 180 s leaves room for a few of those on a bad day; if
+# systemd ever does kill a pass, the state was written before the push, so
+# the next pass carries on rather than starting over.
+TimeoutStartSec=180

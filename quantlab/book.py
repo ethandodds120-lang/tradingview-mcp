@@ -35,7 +35,6 @@ a number from last week.
 from __future__ import annotations
 
 import json
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -275,16 +274,12 @@ def book_multiplier(base_dir: str | Path, run_id: str, tick_s: int = 300) -> tup
 
 
 def alert(base_dir: str | Path, message: str) -> None:
-    """One line to stderr and to alerts.log. For the things that must not be quiet."""
-    line = f"ALERT {_now()} {message}"
-    print(line, file=sys.stderr)
-    try:
-        base = Path(base_dir)
-        base.mkdir(parents=True, exist_ok=True)
-        with (base / ALERTS_FILE).open("a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
-    except OSError:
-        pass                                      # stderr already has it
+    """One line to stderr and to alerts.log, kind `book`. Log-only — the book-stale
+    alert fires on every decision while the book is stale, and the heartbeat's
+    `stale` on book.json already carries the cause (DESIGN-risk.md §4)."""
+    from . import alerts as alerts_mod
+
+    alerts_mod.notify(base_dir, "book", message, push=False)
 
 
 # ────────────────────────────── printing ──────────────────────────────

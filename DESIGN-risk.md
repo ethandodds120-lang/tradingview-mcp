@@ -186,11 +186,190 @@ already carries the cause.
 - Both existing test files still pass; `run.py --strategy tjr --synthetic
   --quick` is unchanged.
 
-## 7. Dry-run on the VPS's state (read-only copies) — filled by the build
+## 7. Dry-run on the VPS's state (read-only copies) — 2026-09-12
 
-## 8. Deviations from the tickets — filled by the build
+Copies of the five run directories, `book.json` and `alerts.log` were taken
+from the box at about 16:55 UTC (scp, read-only) and every command below ran
+against the copies; the md5 of all 24 files was identical before and after.
+Nothing was installed, started or written on the VPS. The build was reviewed
+by three adversarial lenses with one fix round, then the remaining findings
+were fixed in three further rounds, each re-verified by a regression lens and
+an operations lens (§8); 28 → 36 tests in `tests/test_risk.py`; the two other
+test files and `run.py --strategy tjr --synthetic --quick` unchanged; bar
+records of a run that never trips byte-identical to HEAD over 600-bar replay
+rehearsals (the wall-clock `at` masked).
+
+**`paper.py risk --all`** — 1.07 s, no feed, no broker. Every rule is unarmed
+on every live run (one or zero forward bars); nothing would halt.
+
+| run | strategy | R2 `ln(E/E₀)` | band at n | σ_bar | seed returns (warm-up dropped) | R2 false-trip rate |
+|---|---|---|---|---|---|---|
+| gld-trend-20260912 | trend_filter | −0.00578 | −0.02011 (n=1) | 0.01005 | 339 (0) | 5.7 % |
+| qqq-tsmom-20260912 | tsmom | −0.00097 | −0.02113 (n=1) | 0.01057 | 146 (193) | 9.0 % |
+| slv-trend-20260912 | trend_filter | −0.00384 | −0.02116 (n=1) | 0.01058 | 338 (1) | 6.6 % |
+| sol-trend-20260913 | trend_filter, routed | +0.00100 | — (n=0) | 0.00483 | 339 (0), ppy 365.25 | 26.8 % |
+| sol-trend-20260906 | STOPPED | skipped | | | | |
+
+R1 has no closed trades anywhere; R3 needs 20 epoch bars. The SOL false-trip
+rate is high because its seed returns carry a negative drift and the
+bootstrap resamples them as they are (§8). Before the warm-up fix (§8, first
+item) the QQQ σ was 0.0069 and its band a third too tight.
+
+**`paper.py heartbeat --dry-run`** — 0.67 s; the copies were about 65 minutes
+old, so all five items read STALE against the 600 s limit and the report
+showed the one combined message they would share; no `heartbeat.json`
+written, `alerts.log` untouched, nothing pushed.
+
+**A forced halt** on a throwaway replay run in the scratch directory
+(`trend_filter` on `data/NQ_5min_60d.csv`, 36 forward bars: R2 armed with
+σ_bar 0.000545 and band −0.00654, R3 armed at 0.100 vs 0.300). Equity was
+hand-lowered to 99,000 (no threshold touched); the next poll tripped R2 at
+n = 39, value −0.01005 vs −0.00681. The `HALTED` marker, the `halted` journal
+line and the `[halt]` alert line carry the same numbers. The following poll
+journaled three bar records with `"halted": true`, `signal`, `target` and
+`order` null, and no decision. `resume` removed the marker, journaled the
+marker it removed and opened a new epoch at 99,000 with two closed trades
+left behind; the next poll decided again and did not re-trip.
+
+**`paper.py alert --test`** with both variables unset: reports `NOT set`
+for each, sends nothing, tries no network, exit 0.
+
+**Also read, not written:** the local rehearsal run `paper_runs/rehearsal-tjr`
+already evaluates as R2 tripped and will halt on its next poll — expected on
+a replay rehearsal, not a live event.
+
+**To install, after the user's go** (deploy/README.md §8–§9): pull on the
+box (the polls start evaluating the rules on the next tick; nothing can arm
+for 20 bars), write `/etc/quantlab/telegram.env` by hand (mode 600), copy
+the heartbeat unit and timer, `daemon-reload`, `enable --now
+quantlab-heartbeat.timer`, run `paper.py alert --test` and `paper.py risk
+--all` on the box, and read the first tick's journal lines.
+
+## 8. Deviations from the tickets and from §1–§6, as built
+
+Written back by the build and its reviews. None changes a number a run
+journals when no rule trips.
+
+**One decision for the user before install — R2's σ on a strategy that is
+often flat.** As built, σ_bar is the standard deviation of every seed return
+after the strategy's first position, flat bars included. A long-only filter
+that sits out for much of its seed therefore gets a σ well below what it
+runs at while invested, and its 2σ band is closer to 1σ in the stretches
+that matter. Measured: `sol-trend-20260913` — the one routed run, holding a
+position now — has a seed σ_bar of 0.00483 against the 0.00785 its own 15 %
+vol target implies on a 365-day calendar, so its band is 1.6× too tight
+while invested and its false-trip rate prints 26.8 %. A reviewer's intraday
+`trend_filter` replay tripped R2 on the first armed bar on a −0.50 % move
+for the same reason (σ_bar 0.0004). The three daily equity runs are
+unaffected (σ_bar 0.0101–0.0106 against 0.0094 implied). Options: **(a)**
+keep the ticket's literal "backtest-implied" σ and accept early halts on
+often-flat strategies; **(b)** floor σ_bar at `vol_target / √ppy`, the
+per-bar σ the sizing itself aims at — recommended: it is one line, it cannot
+tighten any band, and it leaves the three equity runs' numbers unchanged;
+**(c)** an invested-bars-only σ. Not changed here: it is the rule's
+definition, and nothing is installed until the user has seen it.
+
+**Rules**
+
+- R2's σ_bar is the standard deviation of the engine's seed returns from
+  `max(vol_lookback, the strategy's first non-zero position)`: a strategy's
+  own warm-up contributes exact zeros that are not its noise (QQQ tsmom: 193
+  of 339 seed bars). Flat bars *after* the strategy has started are kept
+  (the band counts every epoch bar); for a run that is continuously
+  invested the invested-only σ is 1.2–1.7× larger and the printed false-trip
+  rate is a lower bound in those stretches. R2 is disabled with a note when
+  fewer than `max(vol_lookback, 20)` returns survive the warm-up, when the
+  strategy never holds a position over the seed, when σ is zero, or for a
+  panel strategy; its inputs record the seed length, the warm-up dropped and
+  the first position bar.
+- R3 is annualised with `periods_per_year` of the run's whole bar store —
+  the figure `vol_scale` sizes to `vol_target` with — not of the epoch
+  window, which misreads bars-in-window as bars-per-day on intraday runs.
+  The first epoch bar's return is measured from the epoch's own equity.
+- R1 with no losing trades stores `null` with `no_losses: true` (Infinity is
+  not JSON); the trip logic uses the raw float.
+- `false_trip_rate` bootstraps the seed returns as they are, drift included.
+- Evaluation point on a new-bar poll: after the newest bar's record is
+  journaled and before its order is routed. Catch-up bars are not evaluated
+  one by one. On a poll with no new bar the deferred on-open send and the
+  route retry run first, then the broker mirror, then the rules; only R2 on
+  intrabar equity can trip there. The bootstrap poll evaluates nothing.
+- The trip poll's own bar record is a normal record carrying the decision;
+  the pending it produced is written off as `unfilled` with `why_not:
+  "halted"` unless nothing was ever sent for it (then it is simply cleared);
+  the next poll's record is the one with `halted: true`.
+- An exception inside `risk.evaluate` fails **closed**: the error is journaled
+  when its text changes (not every poll), printed as an ALERT, and after
+  three consecutive failures the run halts with rule `risk_error`, pushed
+  like any trip; the count lives in `state["risk"]`. A malformed journal
+  line (a crash mid-write) is skipped with one ALERT rather than raised.
+- R2's `E` on a routed run is the whole paper account, as §1.2 says — so one
+  routed run per account and symbol (today: SOL only).
+
+**Halt and resume**
+
+- `resume` is the only writer of `risk_epoch`. The HALTED marker and the
+  epoch are re-read from disk immediately before every evaluation, and every
+  save from any process other than the resuming one adopts the epoch (and the
+  cleared `risk`) found on disk, so a `resume` issued while a poll is in
+  flight, or while a `paper.py run` loop holds the run — a first resume or a
+  later one — is honoured rather than clobbered. One window is left open and
+  recorded: a resume landing inside a single evaluation, between its sync and
+  the save of a trip. Run `resume` between ticks all the same. The mirror
+  image is recorded and not closed: a manual `halt` issued from another
+  process while a poll in flight or a `run` loop holds a pending order
+  journals that order as unfilled twice, once by each process. Run `halt`
+  between ticks too.
+- A manual halt is journaled and logged, not pushed (three push events); its
+  marker carries an extra `reason`. `resume` on a STOPPED run is refused. A
+  HALTED marker present at the very first poll seeds history with no
+  decision. The default epoch is derived (forward start, start equity, zero
+  trades) and never stored; `risk_epoch` appears in state only after a
+  resume. A trade open at the moment of resume is counted in the new epoch
+  when it closes, with its whole P&L.
+
+**Heartbeat**
+
+- Runs on its own `Persistent` timer at `*:2/5`; `After=quantlab-book.service`
+  as ordering only (no `Wants=`), so a replay on boot reads the state the
+  tick just wrote and the heartbeat still fires when the tick's timer is
+  gone. The logic lives in `quantlab/risk.py`.
+- One combined `stale` message per pass for every item that is due;
+  `heartbeat.json` is written before the push; `last_alert` is stamped only
+  when the alert was delivered (pushed, or log-only because Telegram is not
+  configured). A failed push sets a 15-minute `retry_not_before` on the item;
+  a delivered push starts the 6-hour clock. Both clocks are read with 30 s of
+  slack, because the timer fires with up to 5 s of random delay against
+  whole-second stamps and a pass a few seconds early would otherwise wait a
+  whole extra pass.
+- What the `After=` ordering costs: a poll still running delays the watcher
+  (never cancels it) by at most the poll's and the book's own timeouts; and on
+  boot the ordering is best effort, the worst case being one `stale` push
+  followed by a recovery line.
+
+**Alerts**
+
+- The 20 s bound is enforced by the clock: each attempt runs in a worker
+  thread joined for its budget and abandoned if it has not returned (DNS and
+  a dripping server are outside urllib's socket timeout); the retry is
+  skipped when the budget is spent. An abandoned attempt can still deliver
+  late, in which case the next pass may duplicate it on Telegram — accepted.
+- `alerts.log` is strictly one line per `notify`: `ALERT <utc> [<kind>]
+  <message>` with newlines flattened to ` | ` and `fields` as one compact
+  JSON object; the `[telegram] push failed` line that follows a failed push
+  is one line too, whatever the transport returned. The Telegram text keeps
+  the newlines and is capped at 4000 characters. Kinds outside `{fill, stale, halt, test}` are log-only
+  regardless of configuration (`book`, `recovered`).
+- The `fill` push is not unit-tested (it needs a routed fill); it goes
+  through `notify`, which never raises and is bounded.
+
+**From the contract as first written**
 
 - Arming thresholds (20 bars for R2 and R3) and the epoch are additions.
 - R2 uses zero drift, not the backtest mean.
 - The heartbeat runs on its own timer, not inside the tick.
 - Recovery from stale is log-only unless `--push-recovery`.
+- §6's byte-identity claim masks the bar record's `at` (a wall clock).
+- `poll --dry-run` on a *replay* feed advances the replay cursor (pre-existing
+  rehearsal behaviour), so its numbers are not comparable to the real poll
+  that follows; on the csv and live feeds they are.

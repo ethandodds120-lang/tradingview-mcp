@@ -24,6 +24,7 @@ Type=oneshot
 User=root
 WorkingDirectory=/root/tradingview-mcp
 Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/quantlab/telegram.env
 ExecStart=/root/tradingview-mcp/env/bin/python paper.py poll --id %i
 
 # A routed poll can outlive one tick. The worst case is a two-leg crypto flip

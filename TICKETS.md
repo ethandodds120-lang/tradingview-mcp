@@ -6,7 +6,10 @@ deleting it when the commit that fixes it lands. Order matters and is stated.
 ## Sequence (re-ordered 2026-09-12, after the TJR intraday round 2 closes)
 
 1. **T-1 kill rules** together with **T-4 heartbeat, halt flag, push alerts**
-   (plain code, no LLM in the loop)
+   (plain code, no LLM in the loop) — **built 2026-09-12 to `DESIGN-risk.md`,
+   dry-run in its §7, NOT installed on the box.** Closes when installed:
+   needs the user's go, a hand-written `/etc/quantlab/telegram.env`, and the
+   steps in `deploy/README.md` §8–§9
 2. **T-7 indicator + human-exit experiment** — build only after T-1 and T-4
    are live; its Part 1 (trailing benchmark) and Part 2 (wide funnel) are
    done (2026-09-12, `DESIGN-tjr-human.md` §1 and §2.2); the three
@@ -113,6 +116,10 @@ the open on names that are in play *because* they are gapping.
 
 ## T-1 — Deterministic kill rules
 
+**Status 2026-09-12: built, reviewed, dry-run (`DESIGN-risk.md` §7); awaiting
+the go to install.** The contract and the deviations from the wording below
+are in `DESIGN-risk.md` §1–§2 and §8.
+
 Halt a run and alert when any of these trips. Plain code, evaluated on every
 poll, no model anywhere in the risk loop:
 
@@ -174,6 +181,11 @@ their bootstrap semantics byte for byte.
 - the six-truncation causality check still passes for every registry strategy
 
 ## T-4 — Heartbeat, halt flag, push alerts from the VPS
+
+**Status 2026-09-12: built, reviewed, dry-run (`DESIGN-risk.md` §7); awaiting
+the go to install, and the Telegram env file only the user writes.** Contract
+and deviations: `DESIGN-risk.md` §3–§4 and §8; install: `deploy/README.md`
+§8–§9.
 
 The box runs unattended; that is the point. So the box does the telling.
 

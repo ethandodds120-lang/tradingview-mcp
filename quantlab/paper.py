@@ -74,9 +74,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from . import alerts as alerts_mod
 from . import broker as broker_mod
 from . import data as data_mod
 from . import engine, feeds, metrics
+from . import risk as risk_mod
 from .strategies import REGISTRY
 
 BAR_COLS = ["open", "high", "low", "close", "volume"]
@@ -118,6 +120,10 @@ LEG_KEYS = ("client_order_id", "order_id", "type", "limit_price", "status", "fil
             "avg_price", "latency_s", "cancelled")
 
 STOPPED_FILE = "STOPPED"
+HALTED_FILE = risk_mod.HALTED_FILE
+# consecutive polls on which risk.evaluate raised before the run is halted
+# with rule "risk_error" (fail closed, not open — see PaperRun._risk_error)
+RISK_ERROR_HALT_AFTER = 3
 
 
 def _bps(side_sign: float, earlier, later) -> float | None:
@@ -292,6 +298,13 @@ class PaperRun:
     _broker: object | None = field(default=None, repr=False)
     # set for the length of poll(dry_run=True): every write becomes a no-op
     _dry_run: bool = field(default=False, repr=False)
+    # the records a dry run would have journaled, so anything that reads the
+    # journal during it (the kill rules, round_trips) sees the poll's own bars
+    # and fills rather than a mixture of the disk and the in-memory state
+    _dry_records: list = field(default_factory=list, repr=False)
+    # journal line numbers already reported as malformed — one ALERT each, not
+    # one per read (the rules read the journal several times per poll)
+    _journal_warned: set = field(default_factory=set, repr=False)
 
     # ---- files ----
     @property
@@ -301,6 +314,10 @@ class PaperRun:
     @property
     def stopped_path(self) -> Path:
         return self.root / STOPPED_FILE
+
+    @property
+    def halted_path(self) -> Path:
+        return self.root / HALTED_FILE
 
     @property
     def journal_path(self) -> Path:
@@ -415,9 +432,24 @@ class PaperRun:
         return sorted(p.name for p in base.iterdir() if (p / "config.json").exists())
 
     # ---- persistence ----
-    def _save_state(self) -> None:
+    def _state_on_disk(self) -> dict:
+        try:
+            return json.loads(self.state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def _save_state(self, *, adopt_epoch: bool = True) -> None:
         if self._dry_run:
             return
+        if adopt_epoch:
+            # `resume` is the only writer of risk_epoch and it may run in another
+            # process while this one holds the run (a poll in flight, a `run`
+            # loop). An epoch on disk is a person's decision; a save from here
+            # must not put an older epoch — nor None — over it, or the next poll
+            # trips again on the numbers the person just cleared. Disk wins
+            # whenever it differs; only `resume` itself, which is the writer of
+            # the newer epoch, saves without looking.
+            self._sync_risk_from_disk()
         self.state["updated"] = _now()
         tmp = self.state_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.state, indent=2), encoding="utf-8")
@@ -425,9 +457,31 @@ class PaperRun:
 
     def _journal(self, record: dict) -> None:
         if self._dry_run:
+            # exactly what the line would have read back as — a JSON round trip,
+            # so later mutation of the dict by the caller does not reach it
+            self._dry_records.append(json.loads(json.dumps(record, default=str)))
             return
+        self._close_open_journal_line()
         with self.journal_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, default=str) + "\n")
+
+    def _close_open_journal_line(self) -> None:
+        """A crash mid-write leaves a last line without its newline. Terminate it
+        before appending, so the damage stays one malformed line (which
+        `_records` skips) rather than gluing the next record onto it. A healthy
+        journal always ends in a newline and is not touched."""
+        try:
+            with self.journal_path.open("rb") as fh:
+                fh.seek(0, 2)
+                if fh.tell() == 0:
+                    return
+                fh.seek(-1, 2)
+                dangling = fh.read(1) != b"\n"
+        except OSError:
+            return
+        if dangling:
+            with self.journal_path.open("a", encoding="utf-8") as fh:
+                fh.write("\n")
 
     # ---- stop marker (§8) ----
     @property
@@ -449,6 +503,107 @@ class PaperRun:
         tmp.replace(self.stopped_path)
         self._journal({"type": "stopped", **marker})
         return marker
+
+    # ---- halt marker (DESIGN-risk.md §1.3, §2) ----
+    @property
+    def is_halted(self) -> bool:
+        return self.halted_path.exists()
+
+    def _halted_marker(self) -> dict:
+        return risk_mod.read_halted(self.root)
+
+    def halt(self, reason: str, rule: str = "manual", **numbers) -> dict:
+        """Write the HALTED marker and journal it. From here the run polls,
+        settles what is already in flight and journals bars, but does not
+        decide, route, send or retry (§2.1). A rule trip calls this with its
+        `rule`, `value`, `threshold` and `inputs`; a person calls it with the
+        default `rule="manual"` and a reason. Refused on a STOPPED run (§2.4).
+
+        The pending order is cleared: an order planned and not yet sent is
+        journaled as `unfilled` with `why_not: "halted"`. Legs already at the
+        broker are left in flight — they are real and settle at the next bar."""
+        if self.is_stopped:
+            raise RuntimeError(f"{self.config['run_id']} is STOPPED — a stopped run is "
+                               "not polled, so there is nothing to halt")
+        inputs = dict(numbers.pop("inputs", None) or {})
+        if reason:
+            inputs.setdefault("reason", reason)
+        marker = risk_mod.make_marker(rule, numbers.pop("value", None),
+                                      numbers.pop("threshold", None), inputs,
+                                      numbers.pop("epoch", None) or risk_mod.epoch(self))
+        if reason:
+            marker["reason"] = reason
+        if self._dry_run:
+            return marker
+        risk_mod.write_halted(self.root, marker)
+        self._journal({"type": "halted", **marker})
+        self._drop_pending_for_halt()
+        self._save_state()
+        return marker
+
+    def _drop_pending_for_halt(self) -> None:
+        """§1.3 step 4. A planned-and-unsent order (a legacy pending, a failed
+        send, a market-on-open still waiting for its window) is written off;
+        one with legs at the broker stays in flight to be settled."""
+        pending = self.state.get("pending")
+        if not pending:
+            return
+        inflight = self.state.get("inflight")
+        same_bar = bool(inflight and inflight.get("bar") == pending.get("bar"))
+        sent = bool(same_bar and not inflight.get("deferred")
+                    and (inflight.get("legs") or inflight.get("routed") is True))
+        if sent:
+            return
+        if same_bar and not inflight.get("deferred") and inflight.get("routed") is None:
+            # nothing was ever going to go out (the move was below the broker's
+            # minimum notional): there is no order to write off, so no unfilled
+            # record and no count — the pending and its inflight are just cleared
+            self.state["pending"] = None
+            self.state["inflight"] = None
+            return
+        why = "halted — the run was halted before this order was sent"
+        if same_bar and inflight.get("deferred"):
+            why = ("halted — market-on-open planned for the window "
+                   f"{inflight.get('send_not_before')} to {inflight.get('send_not_after')} "
+                   "and never sent")
+        elif same_bar and inflight.get("routed") is False:
+            # the send already failed for its own reason; the halt is not why
+            # this order never filled, so the record keeps the broker's reason
+            why = (inflight.get("why_not") or inflight.get("error")
+                   or "the send failed and the run was then halted")
+        self._journal({
+            "type": "unfilled", "at": _now(), "bar": pending["bar"],
+            "unfilled": {"routed": False, "decided_at": pending["bar"], "fill_bar": None,
+                         "target": pending.get("target"), "ref_price": None,
+                         "why_not": why,
+                         **({"order_style": inflight.get("order_style"),
+                             "legs": _leg_summary(inflight.get("planned_legs"))}
+                            if inflight else {})},
+        })
+        self.state["unfilled"] = self.state.get("unfilled", 0) + 1
+        self.state["pending"] = None
+        if inflight and inflight.get("bar") == pending.get("bar"):
+            self.state["inflight"] = None
+
+    def resume(self, reason: str) -> dict | None:
+        """Remove the HALTED marker, journal it, and start a new epoch at the
+        run's current bar and equity (§2.3). None when the run is not halted.
+        A person's action only — nothing in the tick or the heartbeat calls it."""
+        if not self.is_halted:
+            return None
+        if self.is_stopped:
+            raise RuntimeError(f"{self.config['run_id']} is STOPPED — resume would change "
+                               "nothing; a stopped run is not polled")
+        marker = self._halted_marker()
+        self.halted_path.unlink()
+        ep = risk_mod.new_epoch(self)
+        record = {"type": "resumed", "at": _now(), "reason": reason, "halt": marker,
+                  "epoch": ep}
+        self._journal(record)
+        self.state["risk_epoch"] = ep
+        self.state["risk"] = None           # the next poll evaluates against nothing
+        self._save_state(adopt_epoch=False)  # this is the writer: the file holds the older epoch
+        return record
 
     def bars(self) -> pd.DataFrame:
         if self._bars is None:
@@ -477,11 +632,27 @@ class PaperRun:
         return self._bars
 
     def _records(self) -> list[dict]:
-        if not self.journal_path.exists():
-            return []
-        return [json.loads(line)
-                for line in self.journal_path.read_text(encoding="utf-8").splitlines()
-                if line.strip()]
+        on_disk = []
+        if self.journal_path.exists():
+            lines = self.journal_path.read_text(encoding="utf-8").splitlines()
+            for n, line in enumerate(lines, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    on_disk.append(json.loads(line))
+                except ValueError as exc:
+                    # a crash mid-write (the last line, cut short) must not take
+                    # every later poll down: the line is skipped, said once, and
+                    # stays in the file as it is — the journal is append-only
+                    if n not in self._journal_warned:
+                        self._journal_warned.add(n)
+                        where = "trailing " if n == len(lines) else ""
+                        print(f"ALERT {_now()} {self.config['run_id']}: {where}journal line {n} "
+                              f"is malformed and was skipped ({exc}): {line[:120]!r}",
+                              file=sys.stderr)
+        if self._dry_run and self._dry_records:
+            return on_disk + list(self._dry_records)
+        return on_disk
 
     def journal_frame(self) -> pd.DataFrame:
         return pd.DataFrame(self._records())
@@ -666,6 +837,7 @@ class PaperRun:
         if self.is_stopped:
             return {"stopped": True, "run_id": self.config["run_id"], **self._stopped_marker()}
         self._dry_run = dry_run
+        self._dry_records = []
         try:
             with _sigterm_exits():
                 result = self._poll()
@@ -675,9 +847,19 @@ class PaperRun:
             raise
         finally:
             self._dry_run = False
+            self._dry_records = []
+        if self.is_halted:
+            result["halted"] = True
         return result
 
     def _poll(self) -> dict:
+        # A HALTED run does everything up to the decision and nothing after it
+        # (DESIGN-risk.md §2.1): the broker is refreshed, legs already in flight
+        # are reconciled and settled, bars are stored and journaled, equity is
+        # marked. It does not decide, route, send a deferred order or retry a
+        # failed one, and the kill rules are not re-evaluated until a person
+        # resumes it.
+        halted = self.is_halted
         if self.routes_orders:
             # Once per poll, before anything reads cash or units. A freshly loaded
             # broker knows nothing about the account until it is asked, and a run
@@ -699,7 +881,7 @@ class PaperRun:
         new = store[store.index > last_bar]
         if new.empty:
             sent = None
-            if self.routes_at_decision and not self._dry_run:
+            if self.routes_at_decision and not self._dry_run and not halted:
                 # the fill bar is still ahead: a planned on-open order can go out
                 # now, and a send that failed last poll can be tried again
                 sent = self._send_deferred() or self._retry_route(store)
@@ -711,6 +893,11 @@ class PaperRun:
                    "pending": self.state["pending"]}
             if sent:
                 out["order_sent"] = sent
+            if not halted:
+                # no new bar: the rules re-read the mirrored (intrabar) equity
+                halt = self._risk_check()
+                if halt:
+                    out["halt"] = halt
             return self._dry_note(out)
 
         # Only the newest bar is actionable. If several arrived at once the loop is
@@ -719,7 +906,8 @@ class PaperRun:
         # already history. The simulated account has no such problem and fills them
         # all, exactly as it did before.
         newest = new.index[-1]
-        events = [self._process_bar(store, ts, stale=(self.routes_orders and ts != newest))
+        events = [self._process_bar(store, ts, stale=(self.routes_orders and ts != newest),
+                                    newest=(ts == newest))
                   for ts in new.index]
         return self._dry_note({"new_bars": len(events), "events": events})
 
@@ -728,7 +916,111 @@ class PaperRun:
             out["dry_run"] = True
             if self.state.get("inflight"):
                 out["inflight"] = self.state["inflight"]
+            if self.state.get("risk") is not None:
+                out["risk"] = self.state["risk"]
         return out
+
+    # ---- kill rules (DESIGN-risk.md §1) ----
+    def _risk_check(self) -> dict | None:
+        """Evaluate the three rules on the run as it stands, store the result in
+        state, journal it when a flag changes, and halt on a trip. Returns the
+        marker (or, in a dry run, what the marker would be) when a rule trips.
+        Never called while halted; never called before the first forward bar.
+
+        Both are re-read from disk here, immediately before evaluating, not
+        taken from this object: a person's `resume` (or `halt`) may have run in
+        another process while this one held the run — a poll in flight, a
+        `paper.py run` loop — and the epoch it wrote is the one the rules must
+        read, or the old numbers trip again on the next poll."""
+        if not self.state.get("forward_start"):
+            return None
+        self._sync_risk_from_disk()
+        if self.is_halted:                      # the marker, as it is on disk now
+            return None
+        try:
+            ev = risk_mod.evaluate(self)
+        except (SystemExit, KeyboardInterrupt):
+            raise
+        except Exception as exc:
+            return self._risk_error(f"{type(exc).__name__}: {exc}")
+        prev = self.state.get("risk")
+        if risk_mod.changed(prev, ev):
+            self._journal({"type": "risk", **ev})
+        self.state["risk"] = ev
+        if self._dry_run:
+            unjournaled = sum(1 for r in self._dry_records if r.get("type") == "bar")
+            print(f"\n  kill rules ({self.config['run_id']}) — read as the real poll would, "
+                  f"including the {unjournaled} bar record(s) this dry run did not journal:")
+            print(risk_mod.describe(ev))
+            print(f"  {'WOULD HALT on ' + ev['tripped'] if ev['tripped'] else 'would not halt'}"
+                  " — dry run, nothing written, nothing sent\n")
+        if not ev["tripped"]:
+            return None
+        return self._trip(ev)
+
+    def _sync_risk_from_disk(self) -> None:
+        """Adopt an epoch written by another process. `resume` is the only
+        writer of `risk_epoch`; when the file carries one that is not the one
+        this object holds (None on a run never resumed, or the epoch of an
+        earlier resume), a person has resumed the run since it was loaded, and
+        the rules read from that epoch — with the evaluation history `resume`
+        reset, so the first poll after it journals what a fresh process would.
+        Called before every evaluation and before every save."""
+        on_disk = self._state_on_disk()
+        ep = on_disk.get("risk_epoch")
+        if ep is not None and ep != self.state.get("risk_epoch"):
+            self.state["risk_epoch"] = ep
+            self.state["risk"] = on_disk.get("risk")
+
+    def _risk_error(self, err: str) -> dict | None:
+        """The rules could not be computed. Failing open forever would leave a
+        run deciding with no kill rule over it, so this fails closed: the error
+        is journaled once per distinct text (not every poll), counted while it
+        repeats, and on the RISK_ERROR_HALT_AFTER-th consecutive failure the run
+        is halted with rule `risk_error` — the marker carries the text and the
+        count, and it is pushed like any trip. One evaluation that succeeds
+        resets the count."""
+        prev = self.state.get("risk") or {}
+        count = (int(prev.get("consecutive_errors") or 0) + 1) if "error" in prev else 1
+        now = _now()
+        if prev.get("error") != err:
+            self._journal({"type": "error", "at": now, "stage": "risk", "error": err,
+                           "consecutive_errors": count})
+        print(f"ALERT {now} {self.config['run_id']}: kill rules not evaluated "
+              f"({count} in a row, halt at {RISK_ERROR_HALT_AFTER}) — {err}", file=sys.stderr)
+        self.state["risk"] = {"at": now, "error": err, "consecutive_errors": count}
+        if count < RISK_ERROR_HALT_AFTER:
+            return None
+        inputs = {"error": err, "consecutive_errors": count, "halt_after": RISK_ERROR_HALT_AFTER}
+        marker = self.halt("", rule="risk_error", value=None, threshold=None, inputs=inputs,
+                           epoch=risk_mod.epoch(self))
+        msg = (f"{self.config['run_id']} HALTED by risk_error: the kill rules failed to "
+               f"evaluate {count} polls in a row — {err}")
+        return self._announce_halt(marker, msg)
+
+    def _trip(self, ev: dict) -> dict:
+        """§1.3: the marker, the journal line and the alert carry the same numbers."""
+        rule = ev["tripped"]
+        r = ev["rules"][rule]
+        marker = self.halt("", rule=rule, value=r["value"], threshold=r["threshold"],
+                           inputs=r["inputs"], epoch=ev["epoch"])
+        msg = (f"{self.config['run_id']} HALTED by {rule}: value {marker['value']} vs "
+               f"threshold {marker['threshold']} (epoch bar {ev['epoch'].get('bar')}, "
+               f"{ev.get('epoch_bars')} bars since)")
+        return self._announce_halt(marker, msg)
+
+    def _announce_halt(self, marker: dict, msg: str) -> dict:
+        """The `halt` push, with the marker's own numbers. In a dry run nothing
+        is logged or sent and the marker comes back tagged `would_halt`."""
+        if self._dry_run:
+            print(f"ALERT {_now()} [halt] {msg} [dry run — not logged, not sent]",
+                  file=sys.stderr)
+            return {"would_halt": True, **marker}
+        alerts_mod.notify(self.root.parent, "halt", msg,
+                          fields={"run": self.config["run_id"], "rule": marker["rule"],
+                                  "value": marker["value"], "threshold": marker["threshold"],
+                                  "inputs": marker["inputs"], "unhalt": marker["unhalt"]})
+        return marker
 
     def _mirror_broker(self, price: float) -> None:
         """Copy the broker's view of cash and position into state. poll() has
@@ -746,7 +1038,13 @@ class PaperRun:
         ts = store.index[-1]
         self.state.update({"last_bar": str(ts), "forward_start": str(ts),
                            "bars_seen": len(store)})
-        decision = self._decide(store, ts)
+        if self.is_halted:
+            # a marker written before the first poll: seed the history, decide nothing
+            self.state["pending"] = None
+            decision = {"signal": None, "target": None, "order": None, "halted": True,
+                        "why": "halted — no decision, no order"}
+        else:
+            decision = self._decide(store, ts)
         self._journal({
             "type": "backfill", "at": _now(), "bar": str(ts),
             "history_bars": len(store),
@@ -763,16 +1061,25 @@ class PaperRun:
         return out
 
     def _process_bar(self, store: pd.DataFrame, ts: pd.Timestamp,
-                     stale: bool = False) -> dict:
+                     stale: bool = False, newest: bool = True) -> dict:
         bar = store.loc[ts]
         acct = self._account()
         pending = self.state.get("pending")
+        halted = self.is_halted
 
         # 1. yesterday's decision fills at this bar's open
         fill, unfilled, would_send = None, None, None
         if pending is not None:
             inflight = self.state.get("inflight")
-            if self.routes_at_decision:
+            if halted and not (self.routes_at_decision and inflight
+                               and inflight.get("bar") == pending["bar"]):
+                # halt() writes a planned-and-unsent order off; a pending that
+                # survived (a marker written by hand) is not filled here either
+                unfilled = {"routed": False, "decided_at": pending["bar"],
+                            "target": pending["target"], "ref_price": float(bar["open"]),
+                            "why_not": "halted — the order was not sent"}
+                self.state["unfilled"] = self.state.get("unfilled", 0) + 1
+            elif self.routes_at_decision:
                 # the order went out when the decision was made (§3). This open is
                 # the price the backtest assumed for it, not where it fills.
                 if not inflight:
@@ -824,9 +1131,15 @@ class PaperRun:
         if self.routes_orders:
             self.state["broker_equity"] = acct.account_equity
 
-        # 3. decide for the next bar
+        # 3. decide for the next bar — unless halted, in which case the bar is
+        # journaled with `halted: true`, no signal, no order, and pending stays None
         history = store.loc[:ts]
-        decision = self._decide(history, ts, held=acct.fraction(close))
+        if halted:
+            self.state["pending"] = None
+            decision = {"signal": None, "target": None, "order": None, "halted": True,
+                        "why": "halted — no decision, no order"}
+        else:
+            decision = self._decide(history, ts, held=acct.fraction(close))
 
         record = {
             "type": "bar", "at": _now(), "bar": str(ts),
@@ -844,6 +1157,19 @@ class PaperRun:
         self._journal(record)
         if would_send:
             record["would_send"] = would_send
+        if fill and self.routes_orders and not self._dry_run:
+            self._push_fill(ts, fill)
+        # The kill rules read the poll's numbers once its bars are processed — the
+        # newest bar's record is on disk, and the only thing left is to send its
+        # order. A trip here clears that order (journaled as unfilled, "halted")
+        # and nothing is routed. Catch-up bars are not evaluated: their decisions
+        # are not sent, and the newest bar's evaluation reads them anyway.
+        if newest and not halted:
+            halt = self._risk_check()
+            if halt:
+                record["halt"] = halt
+                if not self._dry_run:
+                    return record
         # Routed at decision time: the bar record and the pending order are on disk
         # first, then the order goes out and gets its own `order_sent` line. A crash
         # mid-wait, or a quote that fails on the way, can lose neither — and cannot
@@ -853,6 +1179,41 @@ class PaperRun:
             self._save_state()
             record["order_sent"] = self._route_guarded(ts, decision, close)
         return record
+
+    def _push_fill(self, ts: pd.Timestamp, fill: dict) -> None:
+        """The `fill` push (DESIGN-risk.md §4): routed runs only, with the
+        execution fields of DESIGN-execution.md §4 where the fill carries them."""
+        run_id = self.config["run_id"]
+        ref = fill.get("poll_price", fill.get("ref_price"))
+        fields = {
+            "run": run_id, "bar": str(ts), "side": fill.get("side"), "units": fill.get("units"),
+            "fill_price": fill.get("fill_price"), "ref_price": ref,
+            "bar_price": fill.get("bar_price"),
+            "slippage_bps": fill.get("slippage_bps"), "delay_bps": fill.get("delay_bps"),
+            "total_bps": fill.get("total_bps"), "excess_bps": fill.get("excess_bps"),
+            "latency_s": fill.get("latency_s"), "lag_s": fill.get("lag_s"),
+            "order_style": fill.get("order_style"),
+            "order_ids": fill.get("order_ids"),
+        }
+        for flag in ("partial", "late", "short_by"):
+            if fill.get(flag) is not None:
+                fields[flag] = fill[flag]
+        fields = {k: v for k, v in fields.items() if v is not None}
+        try:
+            msg = (f"{run_id} FILL {fill.get('side')} {float(fill.get('units')):+.6g} "
+                   f"@ {float(fill.get('fill_price')):.6g}")
+            detail = []
+            if ref is not None:
+                detail.append(f"ref {float(ref):.6g}")
+            if fill.get("slippage_bps") is not None:
+                detail.append(f"slip {float(fill['slippage_bps']):+.1f} bps")
+            if fill.get("latency_s") is not None:
+                detail.append(f"latency {float(fill['latency_s']):.2f} s")
+            if detail:
+                msg += " (" + ", ".join(detail) + ")"
+        except (TypeError, ValueError):
+            msg = f"{run_id} FILL {fill.get('side')} {fill.get('units')} @ {fill.get('fill_price')}"
+        alerts_mod.notify(self.root.parent, "fill", msg, fields=fields)
 
     def _decide(self, history: pd.DataFrame, ts: pd.Timestamp, held: float = 0.0) -> dict:
         """Signal at the last CLOSED bar, sized, banded. Sets the pending order."""
@@ -1576,6 +1937,12 @@ def poll_forever(run: PaperRun, interval: int, max_polls: int | None = None,
                                      f"{fill['slippage_cost']:+.2f} slip)")
                     elif miss:
                         tail = f"  NO FILL — {miss.get('why_not')}"
+                    if ev.get("halt"):
+                        tail += f"  HALTED by {ev['halt'].get('rule')}"
+                    if ev.get("halted"):
+                        on_event(f"[{ev['bar']}] close {ev['close']:.2f}  HALTED — no decision  "
+                                 f"equity {ev['equity']:,.2f}" + tail)
+                        continue
                     on_event(f"[{ev['bar']}] close {ev['close']:.2f}  "
                              f"sig {ev['signal']:+.0f}  target {ev['target']:+.2f}  "
                              f"equity {ev['equity']:,.2f}" + tail)

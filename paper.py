@@ -195,6 +195,21 @@ def cmd_poll(args) -> int:
         return 0
     if args.dry_run:
         print("  DRY RUN — nothing written, nothing sent\n")
+    # result["halt"] (or an event's "halt") is a trip ON this poll; result["halted"]
+    # says the marker was already there when the poll ran. The two read differently.
+    halt = result.get("halt") or next((ev.get("halt") for ev in result.get("events", [])
+                                       if ev.get("halt")), None)
+    if halt and halt.get("would_halt"):
+        print(f"  {args.id} WOULD HALT on this poll by {halt.get('rule')} — dry run, "
+              "nothing written, nothing sent\n")
+    elif halt:
+        print(f"  {args.id} HALTED on this poll by {halt.get('rule')}: the decision was "
+              "journaled and the order written off; from the next poll it polls and "
+              "journals without deciding\n")
+    elif result.get("halted"):
+        m = run._halted_marker()
+        print(f"  {args.id} is HALTED ({m.get('at')} by {m.get('rule')}) — polled and "
+              "journaled, no decision, no order\n")
     print(result)
     return 0
 
@@ -210,6 +225,142 @@ def cmd_stop(args) -> int:
     print(f"  stopped {args.id} at {marker['at']} — {marker['reason']}")
     print(f"  marker {run.stopped_path}; run deploy/sync-tick.sh so the tick drops it")
     return 0
+
+
+def cmd_risk(args) -> int:
+    """The kill rules as they stand (DESIGN-risk.md §1), read-only. Loads
+    neither feed nor broker; works on a copy of the run directories."""
+    from quantlab import risk
+
+    if not args.id and not args.all:
+        raise SystemExit("risk needs --id <run> or --all")
+    runs = [args.id] if args.id else paper.PaperRun.list_runs(args.dir)
+    if not runs:
+        print(f"  no runs under {args.dir}/")
+        return 0
+    for run_id in runs:
+        try:
+            _risk_one(args, risk, run_id)
+        except paper.ParamDrift:
+            print(f"\n  {run_id}: PARAM DRIFT — config edited after creation; not evaluated")
+        except (SystemExit, KeyboardInterrupt):
+            raise
+        except Exception as exc:
+            # one run's broken files must not hide the others' numbers
+            print(f"\n  {run_id}: not evaluated — {type(exc).__name__}: {exc}")
+    print()
+    return 0
+
+
+def _risk_one(args, risk, run_id: str) -> None:
+    run = paper.PaperRun.load(args.dir, run_id)
+    print(f"\n  {run_id}  {run.config['strategy']}  "
+          + ("STOPPED" if run.is_stopped else "HALTED" if run.is_halted else "live"))
+    if run.is_stopped:
+        m = run._stopped_marker()
+        print(f"  stopped {m.get('at')}: {m.get('reason')} — not polled, rules not evaluated")
+        return
+    if run.is_halted:
+        m = run._halted_marker()
+        print(f"  HALTED {m.get('at')} by {m.get('rule')}: value {m.get('value')} vs "
+              f"threshold {m.get('threshold')} — {m.get('unhalt')}")
+    profile = risk.seed_profile(run)
+    seed = profile["returns"]
+    ev = risk.evaluate(run, seed=profile)
+    print(risk.describe(ev))
+    rate = risk.false_trip_rate(seed)
+    if rate is None:
+        print(f"  R2 false-trip rate: not computable ({profile.get('note') or 'no seed returns'})")
+    else:
+        print(f"  R2 false-trip rate: {rate:.1%} of 1000 stationary-block-bootstrap paths "
+              f"of the {len(seed)} seed returns (block 10, 250 bars) cross the band"
+              f" — seed returns start at the strategy's first position "
+              f"({profile.get('first_position_bar')}; {profile.get('warmup_bars')} warmup "
+              f"bar(s) after the vol lookback dropped)")
+    last = run.state.get("risk")
+    if last is not None:
+        if last.get("error"):
+            print(f"  last poll could not evaluate the rules at {last.get('at')} "
+                  f"({last.get('consecutive_errors')} in a row): {last['error']}")
+        else:
+            print(f"  last evaluated by a poll at {last.get('at')}")
+
+
+def cmd_halt(args) -> int:
+    """A person's halt (§2.2): the same marker a rule trip writes, rule "manual"."""
+    run = paper.PaperRun.load(args.dir, args.id)
+    if run.is_stopped:
+        print(f"  {args.id} is STOPPED — refusing: a stopped run is not polled, so there "
+              "is nothing to halt")
+        return 1
+    if run.is_halted:
+        print(f"  {args.id} is already halted: {run._halted_marker()}")
+        return 0
+    marker = run.halt(args.reason)
+    print(f"  halted {args.id} at {marker['at']} — {args.reason}")
+    print(f"  marker {run.halted_path}. It keeps polling and journaling; it will not "
+          f"decide or route until `paper.py resume --id {args.id} --reason ...`")
+    if run.state.get("pending") is None:
+        print("  no order pending")
+    return 0
+
+
+def cmd_resume(args) -> int:
+    """Remove the marker and start a new epoch (§2.3). Never automatic."""
+    run = paper.PaperRun.load(args.dir, args.id)
+    if not run.is_halted:
+        print(f"  {args.id} is not halted — nothing to resume")
+        return 0
+    if run.is_stopped:
+        print(f"  {args.id} is STOPPED — resume would change nothing; it is not polled")
+        return 1
+    rec = run.resume(args.reason)
+    ep = rec["epoch"]
+    print(f"  resumed {args.id} at {rec['at']} — {args.reason}")
+    print(f"  removed marker: {rec['halt'].get('rule')} at {rec['halt'].get('at')}")
+    print(f"  new epoch: bar {ep['bar']}, equity {ep['equity']:,.2f}, "
+          f"{ep['closed_trades_before']} closed trades left behind")
+    return 0
+
+
+def cmd_heartbeat(args) -> int:
+    """Is everything still polling? (§3) Runs from its own timer, not the tick."""
+    from quantlab import risk
+
+    report = risk.heartbeat(args.dir, dry_run=args.dry_run, push_recovery=args.push_recovery)
+    print()
+    print(risk.format_heartbeat(report))
+    print()
+    return 0
+
+
+def cmd_alert(args) -> int:
+    """`alert --test`: says whether the two Telegram variables are set — never
+    their values — and sends one fixed test line if they are."""
+    import os
+    import socket
+    from datetime import datetime, timezone
+
+    from quantlab import alerts
+
+    if not args.test:
+        raise SystemExit("alert: pass --test")
+    for var in (alerts.TOKEN_VAR, alerts.CHAT_VAR):
+        print(f"  {var:<20} {'set' if os.environ.get(var) else 'NOT set'}")
+    if not alerts.configured():
+        print("\n  Telegram is not configured — nothing was sent and no network was tried.")
+        print("  deploy/README.md §9 says how to write /etc/quantlab/telegram.env by hand.\n")
+        return 0
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    res = alerts.notify(args.dir, "test",
+                        f"quantlab test alert from {socket.gethostname()} at {now}")
+    tg = res.get("telegram") or {}
+    if res.get("pushed"):
+        print(f"\n  test message accepted by Telegram (HTTP {tg.get('status')}, "
+              f"{tg.get('attempts')} attempt(s))\n")
+        return 0
+    print(f"\n  test message NOT accepted: {tg.get('error') or res.get('why_not_pushed')}\n")
+    return 1
 
 
 def cmd_backfill_execution(args) -> int:
@@ -673,6 +824,35 @@ def main() -> int:
     stp.add_argument("--id", required=True)
     stp.add_argument("--reason", required=True, help="why — it goes in the journal")
     stp.set_defaults(func=cmd_stop)
+
+    rsk = sub.add_parser("risk", help="the kill rules as they stand — read-only, no feed, "
+                                      "no broker (DESIGN-risk.md §1)")
+    rsk.add_argument("--id")
+    rsk.add_argument("--all", action="store_true", help="every run under --dir")
+    rsk.set_defaults(func=cmd_risk)
+
+    hlt = sub.add_parser("halt", help="write the HALTED marker: keep polling, stop deciding")
+    hlt.add_argument("--id", required=True)
+    hlt.add_argument("--reason", required=True, help="why — it goes in the marker and the journal")
+    hlt.set_defaults(func=cmd_halt)
+
+    rsm = sub.add_parser("resume", help="remove the HALTED marker and start a new epoch")
+    rsm.add_argument("--id", required=True)
+    rsm.add_argument("--reason", required=True, help="why — it goes in the journal")
+    rsm.set_defaults(func=cmd_resume)
+
+    hb = sub.add_parser("heartbeat", help="is every run and the book still fresh? alerts on "
+                                          "stale (its own timer, not the tick)")
+    hb.add_argument("--dry-run", action="store_true",
+                    help="print what it finds; write no state, no log line, no push")
+    hb.add_argument("--push-recovery", action="store_true",
+                    help="also push a stale -> fresh recovery (default: log only)")
+    hb.set_defaults(func=cmd_heartbeat)
+
+    alt = sub.add_parser("alert", help="alert --test: is Telegram configured, and does a "
+                                       "test line get through")
+    alt.add_argument("--test", action="store_true")
+    alt.set_defaults(func=cmd_alert)
 
     bfe = sub.add_parser("backfill-execution",
                          help="reconstruct the execution fields for a fill made before "

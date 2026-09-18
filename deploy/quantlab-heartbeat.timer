@@ -1,0 +1,21 @@
+# The watcher's clock. Every five minutes at :02, :07, :12 … — two minutes
+# after the tick fires at :00, :05, :10 …, so a heartbeat reads the state the
+# tick just wrote rather than racing it. Persistent=true fires a missed run on
+# boot, which is exactly when you want to hear whether the tick came back.
+#
+# Deliberately NOT a Wants= of quantlab-tick.service: if the tick's timer is
+# gone, this one still fires and says so (DESIGN-risk.md §3).
+#
+# Install: deploy/README.md §8.
+
+[Unit]
+Description=quantlab heartbeat — every five minutes, offset from the tick
+
+[Timer]
+OnCalendar=*:2/5
+Persistent=true
+RandomizedDelaySec=5
+Unit=quantlab-heartbeat.service
+
+[Install]
+WantedBy=timers.target
